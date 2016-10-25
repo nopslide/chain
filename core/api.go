@@ -19,6 +19,7 @@ import (
 	"chain/core/rpc"
 	"chain/core/txbuilder"
 	"chain/core/txdb"
+	"chain/core/txfeed"
 	"chain/database/pg"
 	"chain/encoding/json"
 	"chain/errors"
@@ -54,6 +55,7 @@ type Handler struct {
 	Accounts      *account.Manager
 	HSM           *mockhsm.HSM
 	Indexer       *query.Indexer
+	TxFeeds       *txfeed.Tracker
 	AccessTokens  *accesstoken.CredentialStore
 	Config        *Config
 	DB            pg.DB

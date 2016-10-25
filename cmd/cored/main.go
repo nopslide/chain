@@ -32,6 +32,7 @@ import (
 	"chain/core/rpc"
 	"chain/core/txbuilder"
 	"chain/core/txdb"
+	"chain/core/txfeed"
 	"chain/crypto/ed25519"
 	"chain/database/pg"
 	"chain/database/sql"
@@ -255,6 +256,7 @@ func launchConfiguredCore(ctx context.Context, db *sql.DB, config *core.Config, 
 		Assets:       assets,
 		Accounts:     accounts,
 		HSM:          hsm,
+		TxFeeds:      &txfeed.Tracker{DB: db},
 		Indexer:      indexer,
 		AccessTokens: &accesstoken.CredentialStore{DB: db},
 		Config:       config,
