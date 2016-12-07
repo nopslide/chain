@@ -13,6 +13,10 @@ import (
 	"chain/protocol/vmutil"
 )
 
+// PinName is used to identify the pin
+// associated with the asset block processor.
+const PinName = "asset"
+
 // A Saver is responsible for saving an annotated asset object
 // for indexing and retrieval.
 // If the Core is configured not to provide search services,
@@ -65,6 +69,13 @@ func (reg *Registry) indexAnnotatedAsset(ctx context.Context, a *Asset) error {
 		}
 	}
 	return reg.indexer.SaveAnnotatedAsset(ctx, a.AssetID, m, a.sortID)
+}
+
+func (reg *Registry) ProcessBlocks(ctx context.Context) {
+	if reg.pinStore == nil {
+		return
+	}
+	reg.pinStore.ProcessBlocks(ctx, reg.chain, PinName, reg.indexAssets)
 }
 
 // indexAssets is run on every block and indexes all non-local assets.
@@ -120,6 +131,10 @@ func (reg *Registry) indexAssets(ctx context.Context, b *bc.Block) error {
 		func(assetID bc.AssetID) { newAssetIDs = append(newAssetIDs, assetID) })
 	if err != nil {
 		return errors.Wrap(err, "error indexing non-local assets")
+	}
+
+	if reg.indexer == nil {
+		return nil
 	}
 
 	// newAssetIDs now contains only the asset IDs of new, non-local

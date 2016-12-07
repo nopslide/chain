@@ -13,19 +13,20 @@ This guide will walk you through the basic functions of an unspent output:
 
 ### Sample Code
 
-All code samples in this guide are extracted from a single Java file.
+All code samples in this guide can be viewed in a single, runnable script. Available languages:
 
-<a href="../examples/java/UnspentOutputs.java" class="downloadBtn btn success" target="\_blank">View Sample Code</a>
+- [Java](../examples/java/UnspentOutputs.java)
+- [Ruby](../examples/ruby/unspent_outputs.rb)
 
 ## List unspent outputs
 
 List all unspent outputs in Alice's account:
 
-$code ../examples/java/UnspentOutputs.java alice-unspent-outputs
+$code alice-unspent-outputs ../examples/java/UnspentOutputs.java ../examples/ruby/unspent_outputs.rb
 
 List all unspent outputs of the gold asset:
 
-$code ../examples/java/UnspentOutputs.java gold-unspent-outputs
+$code gold-unspent-outputs ../examples/java/UnspentOutputs.java ../examples/ruby/unspent_outputs.rb
 
 ## Spend unspent outputs
 
@@ -52,7 +53,7 @@ Given the following unspent output in Alice's account:
 
 Build a transaction spending all units of gold in the unspent output to Bob's account:
 
-$code ../examples/java/UnspentOutputs.java build-transaction-all
+$code build-transaction-all ../examples/java/UnspentOutputs.java ../examples/ruby/unspent_outputs.rb
 
 ### Spend partial unspent output
 
@@ -73,4 +74,4 @@ Given the following unspent output in Alice's account:
 
 Build a transaction spending 40 units of gold in the unspent output to Bob's account, and spending 60 units back to Alice's account as change:
 
-$code ../examples/java/UnspentOutputs.java build-transaction-partial
+$code build-transaction-partial ../examples/java/UnspentOutputs.java ../examples/ruby/unspent_outputs.rb

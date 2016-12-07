@@ -1,6 +1,6 @@
 import { connect } from 'react-redux'
 import { context } from 'utility/environment'
-import chain from 'chain'
+import chain from '_chain'
 import { PageContent, ErrorBanner, PageTitle } from 'features/shared/components'
 import React from 'react'
 import styles from './Index.scss'
@@ -63,16 +63,16 @@ class Index extends React.Component {
           <table className={styles.table}>
             <tbody>
               <tr>
-                <td className={styles.row_label}>Core Type:</td>
+                <td className={styles.row_label}>Core type:</td>
                 <td>{this.props.core.coreType}</td>
               </tr>
               <tr>
-                <td className={styles.row_label}>Setup Time:</td>
+                <td className={styles.row_label}>Setup time:</td>
                 <td>{this.props.core.configuredAt}</td>
               </tr>
               <tr>
-                <td className={styles.row_label}>Build:</td>
-                <td><code>{this.props.core.buildCommit}</code></td>
+                <td className={styles.row_label}>Version:</td>
+                <td><code>{this.props.core.version}</code></td>
               </tr>
               <tr>
                 <td colSpan={2}><hr /></td>
@@ -83,12 +83,12 @@ class Index extends React.Component {
               </tr>
               {onTestnet && !!testnetNextReset &&
                 <tr>
-                  <td className={styles.row_label}>Next Testnet data reset:</td>
+                  <td className={styles.row_label}>Next Chain Testnet data reset:</td>
                   <td>{testnetNextReset.toString()}</td>
                 </tr>}
               {!this.props.core.generator &&
                 <tr>
-                  <td className={styles.row_label}>Generator Access Token:</td>
+                  <td className={styles.row_label}>Network Access Token:</td>
                   <td><code>{this.props.core.generatorAccessToken}</code></td>
                 </tr>}
               <tr>
@@ -104,33 +104,29 @@ class Index extends React.Component {
     let testnetErr
     if (onTestnet) {
       if (testnetBlockchainMismatch) {
-        testnetErr = <span>
-          Chain Testnet has been reset. Please reset your core below.
-        </span>
+        testnetErr = 'Chain Testnet has been reset. Please reset your core below.'
       } else if (testnetNetworkMismatch) {
-        testnetErr = <span>
-          This core is no longer compatible with Testnet. <a href='https://chain.com/docs' target='_blank'>Please upgrade Chain Core</a>.
-        </span>
+        testnetErr = {message: <span>This core is no longer compatible with Chain Testnet. <a href='https://chain.com/docs' target='_blank'>Please upgrade Chain Core</a>.</span>}
       }
     }
 
     let networkStatusBlock = (
       <div className={`${styles.right} ${styles.col}`}>
         <div>
-          <h4>Network Status</h4>
+          <h4>Network status</h4>
 
           <table className={styles.table}>
             <tbody>
               <tr>
-                <td className={styles.row_label}>Generator Block:</td>
-                <td>{this.props.core.generatorBlockHeight}</td>
+                <td className={styles.row_label}>Generator block:</td>
+                <td className={styles.row_value}>{this.props.core.generatorBlockHeight}</td>
               </tr>
               <tr>
-                <td className={styles.row_label}>Local Block:</td>
-                <td>{this.props.core.blockHeight}</td>
+                <td className={styles.row_label}>Local block:</td>
+                <td className={styles.row_value}>{this.props.core.blockHeight}</td>
               </tr>
               <tr>
-                <td className={styles.row_label}>Replication Lag:</td>
+                <td className={styles.row_label}>Replication lag:</td>
                 <td className={`${styles.replication_lag} ${styles[this.props.core.replicationLagClass]}`}>
                   {this.props.core.replicationLag === null ? '???' : this.props.core.replicationLag}
                 </td>
@@ -138,7 +134,7 @@ class Index extends React.Component {
             </tbody>
           </table>
 
-          {testnetErr && <ErrorBanner title='Chain Testnet error' message={testnetErr} />}
+          {testnetErr && <ErrorBanner title='Chain Testnet error' error={testnetErr} />}
         </div>
       </div>
     )
@@ -146,7 +142,7 @@ class Index extends React.Component {
     let resetDataBlock = (
       <div className='row'>
         <div className='col-sm-6'>
-          <h4>Reset Data</h4>
+          <h4>Reset data</h4>
 
           {this.props.core.production ?
             <p>
@@ -157,7 +153,7 @@ class Index extends React.Component {
               <p>
                 This will permanently delete all data stored in this core,
                 including blockchain data, accounts, assets, indexes,
-                and Mock HSM keys.
+                and MockHSM keys.
               </p>
 
               {this.state.deleteError && <ErrorBanner

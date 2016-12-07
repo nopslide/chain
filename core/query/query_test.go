@@ -8,6 +8,7 @@ import (
 	"chain/core/account"
 	"chain/core/asset"
 	"chain/core/coretest"
+	"chain/core/pin"
 	"chain/database/pg/pgtest"
 	"chain/protocol/prottest"
 	"chain/testutil"
@@ -19,12 +20,16 @@ func setupQueryTest(t *testing.T) (context.Context, *Indexer, time.Time, time.Ti
 	_, db := pgtest.NewDB(t, pgtest.SchemaPath)
 	ctx := context.Background()
 	c := prottest.NewChain(t)
-	indexer := NewIndexer(db, c)
-	accounts := account.NewManager(db, c)
-	assets := asset.NewRegistry(db, c)
+	pinStore := pin.NewStore(db)
+	coretest.CreatePins(ctx, t, pinStore)
+	indexer := NewIndexer(db, c, pinStore)
+	accounts := account.NewManager(db, c, pinStore)
+	assets := asset.NewRegistry(db, c, pinStore)
+	assets.IndexAssets(indexer)
 	indexer.RegisterAnnotator(accounts.AnnotateTxs)
 	indexer.RegisterAnnotator(assets.AnnotateTxs)
-	c.AddBlockCallback(indexer.IndexTransactions)
+	go assets.ProcessBlocks(ctx)
+	go indexer.ProcessBlocks(ctx)
 
 	acct1, err := accounts.Create(ctx, []string{testutil.TestXPub.String()}, 1, "", nil, nil)
 	if err != nil {
@@ -51,6 +56,7 @@ func setupQueryTest(t *testing.T) (context.Context, *Indexer, time.Time, time.Ti
 	coretest.IssueAssets(ctx, t, c, assets, accounts, asset2.AssetID, 100, acct1.ID)
 
 	prottest.MakeBlock(t, c)
+	<-pinStore.PinWaiter(TxPinName, c.Height())
 
 	time2 := time.Now()
 

@@ -4,6 +4,10 @@
   margin-bottom: $gutter-size;
 }
 
+.error {
+  border-color: $highlight-danger-border;
+}
+
 .header {
   display: flex;
   justify-content: space-between;
@@ -12,6 +16,6 @@
 
 .title {
   color: $text-strong-color;
-  font-size: 16px;
+  font-size: $font-size-form-section-title;
   font-weight: bold;
 }

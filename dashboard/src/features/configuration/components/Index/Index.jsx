@@ -34,7 +34,7 @@ class Index extends React.Component {
 
     return new Promise((resolve, reject) => {
       this.props.submitForm(data)
-        .catch((err) => reject({type: err.message}))
+        .catch((err) => reject({type: err}))
     })
   }
 
@@ -68,8 +68,8 @@ class Index extends React.Component {
     let configSubmit = [
       (type.error && <ErrorBanner
         key='configError'
-        title='There was a problem configuring your core:'
-        message={type.error}
+        title='There was a problem configuring your core'
+        error={type.error}
       />),
       <button
         key='configSubmit'
@@ -152,7 +152,7 @@ class Index extends React.Component {
                 placeholder='https://<block-generator-host>'
                 fieldProps={generator_url} />
               <TextField
-                title='Generator Access Token'
+                title='Network Access Token'
                 placeholder='token-id:9e5f139755366add8c76'
                 fieldProps={generator_access_token} />
               <TextField

@@ -20,24 +20,25 @@ This guide will walk you through a few basic balance queries:
 
 ### Sample Code
 
-All code samples in this guide are extracted from a single Java file.
+All code samples in this guide can be viewed in a single, runnable script. Available languages:
 
-<a href="../examples/java/Balances.java" class="downloadBtn btn success" target="\_blank">View Sample Code</a>
+- [Java](../examples/java/Balances.java)
+- [Ruby](../examples/ruby/balances.rb)
 
 ## List account balances
 
 List the asset IOU balances in Bank1's account:
 
-$code ../examples/java/Balances.java account-balance
+$code account-balance ../examples/java/Balances.java ../examples/ruby/balances.rb
 
 ## Get asset circulation
 
 Get the circulation of the Bank 1 USD IOU on the blockchain:
 
-$code ../examples/java/Balances.java usd-iou-circulation
+$code usd-iou-circulation ../examples/java/Balances.java ../examples/ruby/balances.rb
 
 ## List account balances with custom summation
 
 List the asset IOU balances in Bank1's account, summed by currency:
 
-$code ../examples/java/Balances.java account-balance-sum-by-currency
+$code account-balance-sum-by-currency ../examples/java/Balances.java ../examples/ruby/balances.rb

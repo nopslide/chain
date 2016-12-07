@@ -6,10 +6,12 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"io"
 
 	"golang.org/x/crypto/sha3"
 
 	"chain/crypto/sha3pool"
+	"chain/encoding/blockchain"
 	"chain/errors"
 )
 
@@ -21,7 +23,7 @@ var emptyHash = sha3.Sum256(nil)
 
 // String returns the bytes of h encoded in hex.
 func (h Hash) String() string {
-	b, _ := h.MarshalText()
+	b, _ := h.MarshalText() // #nosec
 	return string(b)
 }
 
@@ -95,11 +97,12 @@ func ParseHash(s string) (h Hash, err error) {
 	return h, errors.Wrap(err, "decode hex")
 }
 
-func fastHash(d []byte) []byte {
+func writeFastHash(w io.Writer, d []byte) {
 	if len(d) == 0 {
-		return nil
+		blockchain.WriteVarstr31(w, nil)
+		return
 	}
 	var h [32]byte
 	sha3pool.Sum256(h[:], d)
-	return h[:]
+	blockchain.WriteVarstr31(w, h[:])
 }

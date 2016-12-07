@@ -33,7 +33,7 @@ and compose transactions.
 To publish a new transaction, prepare your transaction
 (select outputs, and compose and sign the tx) and send the
 transaction to the network's generator. To wait for
-confirmation, call WaitForBlock on successive block heights
+confirmation, call BlockWaiter on successive block heights
 and inspect the blockchain state until you find that the
 transaction has been either confirmed or rejected. Note
 that transactions may be malleable if there's no commitment
@@ -64,8 +64,6 @@ var (
 	// too far in excess of the tip of the blockchain.
 	ErrTheDistantFuture = errors.New("block height too far in future")
 )
-
-type BlockCallback func(ctx context.Context, block *bc.Block) error
 
 // Store provides storage for blockchain data: blocks and state tree
 // snapshots.
@@ -106,8 +104,7 @@ type Chain struct {
 	InitialBlockHash  bc.Hash
 	MaxIssuanceWindow time.Duration // only used by generators
 
-	blockCallbacks []BlockCallback
-	state          struct {
+	state struct {
 		cond     sync.Cond // protects height, block, snapshot
 		height   uint64
 		block    *bc.Block       // current only if leader
@@ -120,6 +117,7 @@ type Chain struct {
 	pendingSnapshots   chan pendingSnapshot
 
 	prevalidated prevalidatedTxsCache
+	ready        chan struct{}
 }
 
 type pendingSnapshot struct {
@@ -137,6 +135,7 @@ func NewChain(ctx context.Context, initialBlockHash bc.Hash, store Store, pool P
 		prevalidated: prevalidatedTxsCache{
 			lru: lru.New(maxCachedValidatedTxs),
 		},
+		ready: make(chan struct{}),
 	}
 	c.state.cond.L = new(sync.Mutex)
 
@@ -172,6 +171,13 @@ func NewChain(ctx context.Context, initialBlockHash bc.Hash, store Store, pool P
 	return c, nil
 }
 
+// Ready returns a channel that is closed when the
+// chain has been recovered. This indicates that it is
+// ready for access.
+func (c *Chain) Ready() <-chan struct{} {
+	return c.ready
+}
+
 // Height returns the current height of the blockchain.
 func (c *Chain) Height() uint64 {
 	c.state.cond.L.Lock()
@@ -204,39 +210,44 @@ func (c *Chain) setState(b *bc.Block, s *state.Snapshot) {
 	}
 }
 
-func (c *Chain) AddBlockCallback(f BlockCallback) {
-	c.blockCallbacks = append(c.blockCallbacks, f)
-}
-
-// WaitForBlockSoon waits for the block at the given height,
+// WaitForBlockSoon returns a channel that
+// waits for the block at the given height,
 // but it is an error to wait for a block far in the future.
 // WaitForBlockSoon will timeout if the context times out.
 // To wait unconditionally, the caller should use WaitForBlock.
-func (c *Chain) WaitForBlockSoon(ctx context.Context, height uint64) error {
-	const slop = 3
-	if height > c.Height()+slop {
-		return ErrTheDistantFuture
-	}
+func (c *Chain) BlockSoonWaiter(ctx context.Context, height uint64) <-chan error {
+	ch := make(chan error, 1)
 
-	done := make(chan struct{}, 1)
 	go func() {
-		c.WaitForBlock(height)
-		done <- struct{}{}
+		const slop = 3
+		if height > c.Height()+slop {
+			ch <- ErrTheDistantFuture
+			return
+		}
+
+		select {
+		case <-c.BlockWaiter(height):
+			ch <- nil
+		case <-ctx.Done():
+			ch <- ctx.Err()
+		}
 	}()
 
-	select {
-	case <-ctx.Done():
-		return ctx.Err()
-	case <-done:
-		return nil
-	}
+	return ch
 }
 
-// WaitForBlock waits for the block at the given height.
-func (c *Chain) WaitForBlock(height uint64) {
-	c.state.cond.L.Lock()
-	defer c.state.cond.L.Unlock()
-	for c.state.height < height {
-		c.state.cond.Wait()
-	}
+// WaitForBlock returns a channel that
+// waits for the block at the given height.
+func (c *Chain) BlockWaiter(height uint64) <-chan struct{} {
+	ch := make(chan struct{}, 1)
+	go func() {
+		c.state.cond.L.Lock()
+		defer c.state.cond.L.Unlock()
+		for c.state.height < height {
+			c.state.cond.Wait()
+		}
+		ch <- struct{}{}
+	}()
+
+	return ch
 }

@@ -209,26 +209,25 @@ func (tx *TxData) Hash() Hash {
 // WitnessHash is the combined hash of the
 // transactions hash and signature data hash.
 // It is used to compute the TxRoot of a block.
-func (tx *TxData) WitnessHash() Hash {
-	var b bytes.Buffer
+func (tx *Tx) WitnessHash() (hash Hash) {
+	hasher := sha3pool.Get256()
+	defer sha3pool.Put256(hasher)
 
-	txhash := tx.Hash()
-	b.Write(txhash[:])
+	hasher.Write(tx.Hash[:])
 
-	blockchain.WriteVarint31(&b, uint64(len(tx.Inputs))) // TODO(bobg): check and return error
+	blockchain.WriteVarint31(hasher, uint64(len(tx.Inputs))) // TODO(bobg): check and return error
 	for _, txin := range tx.Inputs {
-		h := txin.WitnessHash()
-		b.Write(h[:])
+		h := txin.witnessHash()
+		hasher.Write(h[:])
 	}
 
-	blockchain.WriteVarint31(&b, uint64(len(tx.Outputs))) // TODO(bobg): check and return error
+	blockchain.WriteVarint31(hasher, uint64(len(tx.Outputs))) // TODO(bobg): check and return error
 	for _, txout := range tx.Outputs {
-		h := txout.WitnessHash()
-		b.Write(h[:])
+		h := txout.witnessHash()
+		hasher.Write(h[:])
 	}
 
-	var hash Hash
-	sha3pool.Sum256(hash[:], b.Bytes())
+	hasher.Read(hash[:])
 	return hash
 }
 
@@ -355,7 +354,7 @@ func (p Outpoint) String() string {
 
 // WriteTo writes p to w.
 // It assumes w has sticky errors.
-func (p Outpoint) WriteTo(w io.Writer) (int64, error) {
+func (p *Outpoint) WriteTo(w io.Writer) (int64, error) {
 	n, err := w.Write(p.Hash[:])
 	if err != nil {
 		return int64(n), err
@@ -381,7 +380,7 @@ func (a *AssetAmount) readFrom(r io.Reader) (int, error) {
 }
 
 // assumes w has sticky errors
-func (a AssetAmount) writeTo(w io.Writer) {
+func (a *AssetAmount) writeTo(w io.Writer) {
 	w.Write(a.AssetID[:])
 	blockchain.WriteVarint63(w, a.Amount) // TODO(bobg): check and return error
 }
@@ -391,7 +390,6 @@ func writeRefData(w io.Writer, data []byte, serflags byte) {
 	if serflags&SerMetadata != 0 {
 		blockchain.WriteVarstr31(w, data) // TODO(bobg): check and return error
 	} else {
-		h := fastHash(data)
-		blockchain.WriteVarstr31(w, h)
+		writeFastHash(w, data)
 	}
 }

@@ -7,9 +7,16 @@ import (
 
 	"github.com/lib/pq"
 
+	"chain/core/asset"
 	"chain/database/pg"
 	"chain/errors"
 	"chain/protocol/bc"
+)
+
+const (
+	// TxPinName is used to identify the pin associated
+	// with the transaction block processor.
+	TxPinName = "tx"
 )
 
 // Annotator describes a function capable of adding annotations
@@ -22,9 +29,18 @@ func (ind *Indexer) RegisterAnnotator(annotator Annotator) {
 	ind.annotators = append(ind.annotators, annotator)
 }
 
+func (ind *Indexer) ProcessBlocks(ctx context.Context) {
+	if ind.pinStore == nil {
+		return
+	}
+	ind.pinStore.ProcessBlocks(ctx, ind.c, TxPinName, ind.IndexTransactions)
+}
+
 // IndexTransactions is registered as a block callback on the Chain. It
 // saves all annotated transactions to the database.
 func (ind *Indexer) IndexTransactions(ctx context.Context, b *bc.Block) error {
+	<-ind.pinStore.PinWaiter(asset.PinName, b.Height)
+
 	err := ind.insertBlock(ctx, b)
 	if err != nil {
 		return err

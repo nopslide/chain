@@ -14,6 +14,7 @@ import java.util.List;
 import com.google.gson.Gson;
 
 import com.squareup.okhttp.CertificatePinner;
+import com.squareup.okhttp.ConnectionPool;
 import com.squareup.okhttp.Credentials;
 import com.squareup.okhttp.MediaType;
 import com.squareup.okhttp.OkHttpClient;
@@ -49,20 +50,17 @@ public class Client {
     }
   }
 
+  public Client(Builder builder) {
+    this.url = builder.url;
+    this.accessToken = builder.accessToken;
+    this.httpClient = buildHttpClient(builder);
+  }
+
   /**
    * Create a new http Client object using the default development host URL.
    */
   public Client() {
-    URL url;
-    try {
-      url = new URL("http://localhost:1999");
-    } catch (MalformedURLException e) {
-      throw new RuntimeException("invalid default development URL", e);
-    }
-
-    this.url = url;
-    this.httpClient = new OkHttpClient();
-    this.httpClient.setFollowRedirects(false);
+    this(new Builder());
   }
 
   /**
@@ -71,13 +69,7 @@ public class Client {
    * @param url the URL of the Chain Core or HSM
    */
   public Client(String url) throws BadURLException {
-    try {
-      this.url = new URL(url);
-    } catch (MalformedURLException e) {
-      throw new BadURLException(e.getMessage());
-    }
-    this.httpClient = new OkHttpClient();
-    this.httpClient.setFollowRedirects(false);
+    this(new Builder().setURL(url));
   }
 
   /**
@@ -86,9 +78,7 @@ public class Client {
    * @param url the URL of the Chain Core or HSM
    */
   public Client(URL url) {
-    this.url = url;
-    this.httpClient = new OkHttpClient();
-    this.httpClient.setFollowRedirects(false);
+    this(new Builder().setURL(url));
   }
 
   /**
@@ -98,8 +88,7 @@ public class Client {
    * @param accessToken a Client API access token
    */
   public Client(String url, String accessToken) throws BadURLException {
-    this(url);
-    this.accessToken = accessToken;
+    this(new Builder().setURL(url).setAccessToken(accessToken));
   }
 
   /**
@@ -109,8 +98,7 @@ public class Client {
    * @param accessToken a Client API access token
    */
   public Client(URL url, String accessToken) {
-    this(url);
-    this.accessToken = accessToken;
+    this(new Builder().setURL(url).setAccessToken(accessToken));
   }
 
   /**
@@ -122,12 +110,14 @@ public class Client {
    * @return the result of the post request
    * @throws ChainException
    */
-  public <T> T request(String action, Object body, Type tClass) throws ChainException {
-    return post(
-        action,
-        body,
-        (Response response, Gson deserializer) ->
-            deserializer.fromJson(response.body().charStream(), tClass));
+  public <T> T request(String action, Object body, final Type tClass) throws ChainException {
+    ResponseCreator<T> rc =
+        new ResponseCreator<T>() {
+          public T create(Response response, Gson deserializer) throws IOException {
+            return deserializer.fromJson(response.body().charStream(), tClass);
+          }
+        };
+    return post(action, body, rc);
   }
 
   /**
@@ -143,13 +133,16 @@ public class Client {
    * @return the result of the post request
    * @throws ChainException
    */
-  public <T> BatchResponse<T> batchRequest(String action, Object body, Type tClass, Type eClass)
-      throws ChainException {
-    return post(
-        action,
-        body,
-        (Response response, Gson deserializer) ->
-            new BatchResponse(response, deserializer, tClass, eClass));
+  public <T> BatchResponse<T> batchRequest(
+      String action, Object body, final Type tClass, final Type eClass) throws ChainException {
+    ResponseCreator<BatchResponse<T>> rc =
+        new ResponseCreator<BatchResponse<T>>() {
+          public BatchResponse<T> create(Response response, Gson deserializer)
+              throws ChainException, IOException {
+            return new BatchResponse<>(response, deserializer, tClass, eClass);
+          }
+        };
+    return post(action, body, rc);
   }
 
   /**
@@ -168,32 +161,33 @@ public class Client {
    * @return the result of the post request
    * @throws ChainException
    */
-  public <T> T singletonBatchRequest(String action, Object body, Type tClass, Type eClass)
-      throws ChainException {
-    return post(
-        action,
-        body,
-        (Response response, Gson deserializer) -> {
-          BatchResponse<T> batch = new BatchResponse(response, deserializer, tClass, eClass);
+  public <T> T singletonBatchRequest(
+      String action, Object body, final Type tClass, final Type eClass) throws ChainException {
+    ResponseCreator<T> rc =
+        new ResponseCreator<T>() {
+          public T create(Response response, Gson deserializer) throws ChainException, IOException {
+            BatchResponse<T> batch = new BatchResponse<>(response, deserializer, tClass, eClass);
 
-          List<APIException> errors = batch.errors();
-          if (errors.size() == 1) {
-            // This throw must occur within this lambda in order for APIClient's
-            // retry logic to take effect.
-            throw errors.get(0);
+            List<APIException> errors = batch.errors();
+            if (errors.size() == 1) {
+              // This throw must occur within this lambda in order for APIClient's
+              // retry logic to take effect.
+              throw errors.get(0);
+            }
+
+            List<T> successes = batch.successes();
+            if (successes.size() == 1) {
+              return successes.get(0);
+            }
+
+            // We should never get here, unless there is a bug in either the SDK or
+            // API code, causing a non-singleton response.
+            throw new ChainException(
+                "Invalid singleton repsonse, request ID "
+                    + batch.response().headers().get("Chain-Request-ID"));
           }
-
-          List<T> successes = batch.successes();
-          if (successes.size() == 1) {
-            return successes.get(0);
-          }
-
-          // We should never get here, unless there is a bug in either the SDK or
-          // API code, causing a non-singleton response.
-          throw new ChainException(
-              "Invalid singleton repsonse, request ID "
-                  + batch.response().headers().get("Chain-Request-ID"));
-        });
+        };
+    return post(action, body, rc);
   }
 
   /**
@@ -274,7 +268,7 @@ public class Client {
     /**
      * Deserializes an HTTP response into a Java object of type T.
      * @param response HTTP response object
-     * @param deserializer json deseriazlier
+     * @param deserializer json deserializer
      * @return an object of type T
      * @throws ChainException
      * @throws IOException
@@ -290,7 +284,7 @@ public class Client {
    * @return a response deserialized into type T
    * @throws ChainException
    */
-  public <T> T post(String path, Object body, ResponseCreator<T> respCreator)
+  private <T> T post(String path, Object body, ResponseCreator<T> respCreator)
       throws ChainException {
     RequestBody requestBody = RequestBody.create(this.JSON, serializer.toJson(body));
     Request req;
@@ -341,6 +335,25 @@ public class Client {
       }
     }
     throw exception;
+  }
+
+  private OkHttpClient buildHttpClient(Builder builder) {
+    OkHttpClient httpClient = new OkHttpClient();
+    httpClient.setFollowRedirects(false);
+    httpClient.setReadTimeout(builder.readTimeout, builder.readTimeoutUnit);
+    httpClient.setWriteTimeout(builder.writeTimeout, builder.writeTimeoutUnit);
+    httpClient.setConnectTimeout(builder.connectTimeout, builder.connectTimeoutUnit);
+
+    httpClient.setConnectionPool(builder.pool);
+
+    if (builder.proxy != null) {
+      httpClient.setProxy(builder.proxy);
+    }
+    if (builder.cp != null) {
+      httpClient.setCertificatePinner(builder.cp);
+    }
+
+    return httpClient;
   }
 
   private static final Random randomGenerator = new Random();
@@ -455,5 +468,139 @@ public class Client {
 
     Client other = (Client) o;
     return this.identifier().equals(other.identifier());
+  }
+
+  /**
+   * A builder class for creating client objects
+   */
+  public static class Builder {
+    private URL url;
+    private String accessToken;
+    private CertificatePinner cp;
+    private long connectTimeout;
+    private TimeUnit connectTimeoutUnit;
+    private long readTimeout;
+    private TimeUnit readTimeoutUnit;
+    private long writeTimeout;
+    private TimeUnit writeTimeoutUnit;
+    private Proxy proxy;
+    private ConnectionPool pool;
+
+    public Builder() {
+      this.setDefaults();
+    }
+
+    private void setDefaults() {
+      try {
+        this.url = new URL("http://localhost:1999");
+      } catch (MalformedURLException e) {
+        throw new RuntimeException("invalid default development URL", e);
+      }
+      this.setReadTimeout(30, TimeUnit.SECONDS);
+      this.setWriteTimeout(30, TimeUnit.SECONDS);
+      this.setConnectTimeout(30, TimeUnit.SECONDS);
+      this.setConnectionPool(50, 2, TimeUnit.MINUTES);
+    }
+
+    /**
+     * Sets the URL for the client
+     * @param url the URL of the Chain Core or HSM
+     */
+    public Builder setURL(String url) throws BadURLException {
+      try {
+        this.url = new URL(url);
+      } catch (MalformedURLException e) {
+        throw new BadURLException(e.getMessage());
+      }
+      return this;
+    }
+
+    /**
+     * Sets the URL for the client
+     * @param url the URL of the Chain Core or HSM
+     */
+    public Builder setURL(URL url) {
+      this.url = url;
+      return this;
+    }
+
+    /**
+     * Sets the access token for the client
+     * @param accessToken The access token for the Chain Core or HSM
+     */
+    public Builder setAccessToken(String accessToken) {
+      this.accessToken = accessToken;
+      return this;
+    }
+
+    /**
+     * Sets the certificate pinner for the client
+     * @param provider certificate provider
+     * @param subjPubKeyInfoHash public key hash
+     */
+    public Builder pinCertificate(String provider, String subjPubKeyInfoHash) {
+      this.cp = new CertificatePinner.Builder().add(provider, subjPubKeyInfoHash).build();
+      return this;
+    }
+
+    /**
+     * Sets the connect timeout for the client
+     * @param timeout the number of time units for the default timeout
+     * @param unit the unit of time
+     */
+    public Builder setConnectTimeout(long timeout, TimeUnit unit) {
+      this.connectTimeout = timeout;
+      this.connectTimeoutUnit = unit;
+      return this;
+    }
+
+    /**
+     * Sets the read timeout for the client
+     * @param timeout the number of time units for the default timeout
+     * @param unit the unit of time
+     */
+    public Builder setReadTimeout(long timeout, TimeUnit unit) {
+      this.readTimeout = timeout;
+      this.readTimeoutUnit = unit;
+      return this;
+    }
+
+    /**
+     * Sets the write timeout for the client
+     * @param timeout the number of time units for the default timeout
+     * @param unit the unit of time
+     */
+    public Builder setWriteTimeout(long timeout, TimeUnit unit) {
+      this.writeTimeout = timeout;
+      this.writeTimeoutUnit = unit;
+      return this;
+    }
+
+    /**
+     * Sets the proxy for the client
+     * @param proxy
+     */
+    public Builder setProxy(Proxy proxy) {
+      this.proxy = proxy;
+      return this;
+    }
+
+    /**
+     * Sets the connection pool for the client
+     * @param maxIdle the maximum number of idle http connections in the pool
+     * @param timeout the number of time units until an idle http connection in the pool is closed
+     * @param unit the unit of time
+     */
+    public Builder setConnectionPool(int maxIdle, long timeout, TimeUnit unit) {
+      this.pool = new ConnectionPool(maxIdle, unit.toMillis(timeout));
+      return this;
+    }
+
+    /**
+     * Builds a client with all of the provided parameters.
+     */
+    public Client build() {
+      return new Client(this);
+    }
   }
 }

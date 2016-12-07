@@ -10,8 +10,10 @@ import (
 	"sync"
 
 	"github.com/golang/groupcache/lru"
+	"github.com/golang/groupcache/singleflight"
 	"github.com/lib/pq"
 
+	"chain/core/pin"
 	"chain/core/signers"
 	"chain/crypto/ed25519"
 	"chain/crypto/ed25519/chainkd"
@@ -23,16 +25,18 @@ import (
 	"chain/protocol/vmutil"
 )
 
-const maxAssetCache = 100
+const maxAssetCache = 1000
 
 var ErrDuplicateAlias = errors.New("duplicate asset alias")
 
-func NewRegistry(db pg.DB, chain *protocol.Chain) *Registry {
+func NewRegistry(db pg.DB, chain *protocol.Chain, pinStore *pin.Store) *Registry {
 	return &Registry{
 		db:               db,
 		chain:            chain,
 		initialBlockHash: chain.InitialBlockHash,
+		pinStore:         pinStore,
 		cache:            lru.New(maxAssetCache),
+		aliasCache:       lru.New(maxAssetCache),
 	}
 }
 
@@ -42,14 +46,18 @@ type Registry struct {
 	chain            *protocol.Chain
 	indexer          Saver
 	initialBlockHash bc.Hash
+	pinStore         *pin.Store
 
-	cacheMu sync.Mutex
-	cache   *lru.Cache
+	idGroup    singleflight.Group
+	aliasGroup singleflight.Group
+
+	cacheMu    sync.Mutex
+	cache      *lru.Cache
+	aliasCache *lru.Cache
 }
 
 func (reg *Registry) IndexAssets(indexer Saver) {
 	reg.indexer = indexer
-	reg.chain.AddBlockCallback(reg.indexAssets)
 }
 
 type Asset struct {
@@ -121,10 +129,15 @@ func (reg *Registry) findByID(ctx context.Context, id bc.AssetID) (*Asset, error
 	if ok {
 		return cached.(*Asset), nil
 	}
-	asset, err := assetQuery(ctx, reg.db, "assets.id=$1", id)
+
+	untypedAsset, err := reg.idGroup.Do(id.String(), func() (interface{}, error) {
+		return assetQuery(ctx, reg.db, "assets.id=$1", id)
+	})
 	if err != nil {
 		return nil, err
 	}
+
+	asset := untypedAsset.(*Asset)
 	reg.cacheMu.Lock()
 	reg.cache.Add(id, asset)
 	reg.cacheMu.Unlock()
@@ -134,7 +147,28 @@ func (reg *Registry) findByID(ctx context.Context, id bc.AssetID) (*Asset, error
 // FindByAlias retrieves an Asset record along with its signer,
 // given an asset alias.
 func (reg *Registry) FindByAlias(ctx context.Context, alias string) (*Asset, error) {
-	return assetQuery(ctx, reg.db, "assets.alias=$1", alias)
+	reg.cacheMu.Lock()
+	cachedID, ok := reg.aliasCache.Get(alias)
+	reg.cacheMu.Unlock()
+	if ok {
+		return reg.findByID(ctx, cachedID.(bc.AssetID))
+	}
+
+	untypedAsset, err := reg.aliasGroup.Do(alias, func() (interface{}, error) {
+		asset, err := assetQuery(ctx, reg.db, "assets.alias=$1", alias)
+		return asset, err
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	a := untypedAsset.(*Asset)
+	reg.cacheMu.Lock()
+	reg.aliasCache.Add(alias, a.AssetID)
+	reg.cache.Add(a.AssetID, a)
+	reg.cacheMu.Unlock()
+	return a, nil
+
 }
 
 // insertAsset adds the asset to the database. If the asset has a client token,

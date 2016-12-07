@@ -17,13 +17,13 @@ class Form extends React.Component {
   submitWithErrors(data) {
     return new Promise((resolve, reject) => {
       this.props.submitForm(data)
-        .catch((err) => reject({_error: err.message}))
+        .catch((err) => reject({_error: err}))
     })
   }
 
   render() {
     const {
-      fields: { alias, tags, definition, root_xpubs, quorum },
+      fields: { alias, tags, definition, xpubs, quorum },
       error,
       handleSubmit,
       submitting
@@ -32,7 +32,7 @@ class Form extends React.Component {
     return(
       <FormContainer
         error={error}
-        label='New Asset'
+        label='New asset'
         onSubmit={handleSubmit(this.submitWithErrors)}
         submitting={submitting} >
 
@@ -44,7 +44,7 @@ class Form extends React.Component {
 
         <FormSection title='Keys and Signing'>
           <KeyConfiguration
-            xpubs={root_xpubs}
+            xpubs={xpubs}
             quorum={quorum}
             quorumHint='Number of signatures required to issue' />
         </FormSection>
@@ -66,7 +66,14 @@ const validate = values => {
   return errors
 }
 
-const fields = [ 'alias', 'tags', 'definition', 'root_xpubs[]', 'quorum' ]
+const fields = [
+  'alias',
+  'tags',
+  'definition',
+  'xpubs[].value',
+  'xpubs[].type',
+  'quorum'
+]
 export default BaseNew.connect(
   BaseNew.mapStateToProps('asset'),
   BaseNew.mapDispatchToProps('asset'),

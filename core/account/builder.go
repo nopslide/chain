@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"time"
 
-	"chain/core/account/utxodb"
 	"chain/core/signers"
 	"chain/core/txbuilder"
 	chainjson "chain/encoding/json"
@@ -14,12 +13,10 @@ import (
 	"chain/protocol/bc"
 )
 
-func (m *Manager) NewSpendAction(amt bc.AssetAmount, accountID string, txHash *bc.Hash, txOut *uint32, refData chainjson.Map, clientToken *string) txbuilder.Action {
+func (m *Manager) NewSpendAction(amt bc.AssetAmount, accountID string, refData chainjson.Map, clientToken *string) txbuilder.Action {
 	return &spendAction{
 		accounts:      m,
 		AssetAmount:   amt,
-		TxHash:        txHash,
-		TxOut:         txOut,
 		AccountID:     accountID,
 		ReferenceData: refData,
 		ClientToken:   clientToken,
@@ -36,71 +33,72 @@ type spendAction struct {
 	accounts *Manager
 	bc.AssetAmount
 	AccountID     string        `json:"account_id"`
-	TxHash        *bc.Hash      `json:"transaction_id"`
-	TxOut         *uint32       `json:"position"`
 	ReferenceData chainjson.Map `json:"reference_data"`
 	ClientToken   *string       `json:"client_token"`
 }
 
-func (a *spendAction) Build(ctx context.Context, maxTime time.Time) (*txbuilder.BuildResult, error) {
+func (a *spendAction) Build(ctx context.Context, maxTime time.Time, b *txbuilder.TemplateBuilder) error {
+	var missing []string
+	if a.AccountID == "" {
+		missing = append(missing, "account_id")
+	}
+	if a.AssetID == (bc.AssetID{}) {
+		missing = append(missing, "asset_id")
+	}
+	if len(missing) > 0 {
+		return txbuilder.MissingFieldsError(missing...)
+	}
+
 	acct, err := a.accounts.findByID(ctx, a.AccountID)
 	if err != nil {
-		return nil, errors.Wrap(err, "get account info")
+		return errors.Wrap(err, "get account info")
 	}
 
-	utxodbSource := utxodb.Source{
-		AssetID:     a.AssetID,
-		Amount:      a.Amount,
-		AccountID:   a.AccountID,
-		TxHash:      a.TxHash,
-		OutputIndex: a.TxOut,
-		ClientToken: a.ClientToken,
+	src := source{
+		AssetID:   a.AssetID,
+		AccountID: a.AccountID,
 	}
-	utxodbSources := []utxodb.Source{utxodbSource}
-	// TODO(kr): make utxodb.Reserve take a single Source not a slice
-	rids, reserved, change, err := a.accounts.utxoDB.Reserve(ctx, utxodbSources, maxTime)
+	res, err := a.accounts.utxoDB.Reserve(ctx, src, a.Amount, a.ClientToken, maxTime)
 	if err != nil {
-		return nil, errors.Wrap(err, "reserving utxos")
+		return errors.Wrap(err, "reserving utxos")
 	}
-	rid := rids[0] // len(rids)==len(utxodbSources)
 
-	var (
-		txins      []*bc.TxInput
-		tplInsts   []*txbuilder.SigningInstruction
-		changeOuts []*bc.TxOutput
-	)
+	// Cancel the reservation if the build gets rolled back.
+	b.OnRollback(canceler(ctx, a.accounts, res.ID))
 
-	for _, r := range reserved {
+	for _, r := range res.UTXOs {
 		txInput, sigInst, err := utxoToInputs(ctx, acct, r, a.ReferenceData)
 		if err != nil {
-			return nil, errors.Wrap(err, "creating inputs")
+			return errors.Wrap(err, "creating inputs")
 		}
-
-		txins = append(txins, txInput)
-		tplInsts = append(tplInsts, sigInst)
-	}
-	if len(change) > 0 {
-		acp, err := a.accounts.CreateControlProgram(ctx, a.AccountID, true)
+		err = b.AddInput(txInput, sigInst)
 		if err != nil {
-			return nil, errors.Wrap(err, "creating control program")
+			return errors.Wrap(err, "adding inputs")
 		}
-		changeOuts = append(changeOuts, bc.NewTxOutput(a.AssetID, change[0].Amount, acp, nil))
 	}
 
-	br := &txbuilder.BuildResult{
-		Inputs:              txins,
-		Outputs:             changeOuts,
-		SigningInstructions: tplInsts,
-		Rollback:            canceler(ctx, a.accounts, rid),
+	if res.Change > 0 {
+		acp, err := a.accounts.createControlProgram(ctx, a.AccountID, true)
+		if err != nil {
+			return errors.Wrap(err, "creating control program")
+		}
+
+		// Don't insert the control program until callbacks are executed.
+		a.accounts.insertControlProgramDelayed(ctx, b, acp)
+
+		err = b.AddOutput(bc.NewTxOutput(a.AssetID, res.Change, acp.controlProgram, nil))
+		if err != nil {
+			return errors.Wrap(err, "adding change output")
+		}
 	}
-	return br, nil
+	return nil
 }
 
 func (m *Manager) NewSpendUTXOAction(outpoint bc.Outpoint) txbuilder.Action {
 	return &spendUTXOAction{
 		accounts: m,
-		TxHash:   outpoint.Hash,
-		TxOut:    outpoint.Index,
+		TxHash:   &outpoint.Hash,
+		TxOut:    &outpoint.Index,
 	}
 }
 
@@ -112,38 +110,45 @@ func (m *Manager) DecodeSpendUTXOAction(data []byte) (txbuilder.Action, error) {
 
 type spendUTXOAction struct {
 	accounts *Manager
-	TxHash   bc.Hash `json:"transaction_id"`
-	TxOut    uint32  `json:"position"`
+	TxHash   *bc.Hash `json:"transaction_id"`
+	TxOut    *uint32  `json:"position"`
 
 	ReferenceData chainjson.Map `json:"reference_data"`
 	ClientToken   *string       `json:"client_token"`
 }
 
-func (a *spendUTXOAction) Build(ctx context.Context, maxTime time.Time) (*txbuilder.BuildResult, error) {
-	rid, r, err := a.accounts.utxoDB.ReserveUTXO(ctx, a.TxHash, a.TxOut, a.ClientToken, maxTime)
-	if err != nil {
-		return nil, err
+func (a *spendUTXOAction) Build(ctx context.Context, maxTime time.Time, b *txbuilder.TemplateBuilder) error {
+	var missing []string
+	if a.TxHash == nil {
+		missing = append(missing, "transaction_id")
+	}
+	if a.TxOut == nil {
+		missing = append(missing, "position")
+	}
+	if len(missing) > 0 {
+		return txbuilder.MissingFieldsError(missing...)
 	}
 
-	acct, err := a.accounts.findByID(ctx, r.AccountID)
+	out := bc.Outpoint{Hash: *a.TxHash, Index: *a.TxOut}
+	res, err := a.accounts.utxoDB.ReserveUTXO(ctx, out, a.ClientToken, maxTime)
 	if err != nil {
-		return nil, err
+		return err
 	}
+	b.OnRollback(canceler(ctx, a.accounts, res.ID))
 
-	txInput, sigInst, err := utxoToInputs(ctx, acct, r, a.ReferenceData)
+	acct, err := a.accounts.findByID(ctx, res.Source.AccountID)
 	if err != nil {
-		return nil, err
+		return err
 	}
-
-	return &txbuilder.BuildResult{
-		Inputs:              []*bc.TxInput{txInput},
-		SigningInstructions: []*txbuilder.SigningInstruction{sigInst},
-		Rollback:            canceler(ctx, a.accounts, rid),
-	}, nil
+	txInput, sigInst, err := utxoToInputs(ctx, acct, res.UTXOs[0], a.ReferenceData)
+	if err != nil {
+		return err
+	}
+	return b.AddInput(txInput, sigInst)
 }
 
 // Best-effort cancellation attempt to put in txbuilder.BuildResult.Rollback.
-func canceler(ctx context.Context, m *Manager, rid int32) func() {
+func canceler(ctx context.Context, m *Manager, rid uint64) func() {
 	return func() {
 		err := m.utxoDB.Cancel(ctx, rid)
 		if err != nil {
@@ -152,12 +157,12 @@ func canceler(ctx context.Context, m *Manager, rid int32) func() {
 	}
 }
 
-func utxoToInputs(ctx context.Context, account *signers.Signer, u *utxodb.UTXO, refData []byte) (
+func utxoToInputs(ctx context.Context, account *signers.Signer, u *utxo, refData []byte) (
 	*bc.TxInput,
 	*txbuilder.SigningInstruction,
 	error,
 ) {
-	txInput := bc.NewSpendInput(u.Hash, u.Index, nil, u.AssetID, u.Amount, u.Script, refData)
+	txInput := bc.NewSpendInput(u.Hash, u.Index, nil, u.AssetID, u.Amount, u.ControlProgram, refData)
 
 	sigInst := &txbuilder.SigningInstruction{
 		AssetAmount: u.AssetAmount,
@@ -193,11 +198,53 @@ type controlAction struct {
 	ReferenceData chainjson.Map `json:"reference_data"`
 }
 
-func (a *controlAction) Build(ctx context.Context, maxTime time.Time) (*txbuilder.BuildResult, error) {
-	acp, err := a.accounts.CreateControlProgram(ctx, a.AccountID, false)
-	if err != nil {
-		return nil, err
+func (a *controlAction) Build(ctx context.Context, maxTime time.Time, b *txbuilder.TemplateBuilder) error {
+	var missing []string
+	if a.AccountID == "" {
+		missing = append(missing, "account_id")
 	}
-	out := bc.NewTxOutput(a.AssetID, a.Amount, acp, a.ReferenceData)
-	return &txbuilder.BuildResult{Outputs: []*bc.TxOutput{out}}, nil
+	if a.AssetID == (bc.AssetID{}) {
+		missing = append(missing, "asset_id")
+	}
+	if len(missing) > 0 {
+		return txbuilder.MissingFieldsError(missing...)
+	}
+
+	// Produce a control program, but don't insert it into the database yet.
+	acp, err := a.accounts.createControlProgram(ctx, a.AccountID, false)
+	if err != nil {
+		return err
+	}
+	a.accounts.insertControlProgramDelayed(ctx, b, acp)
+
+	return b.AddOutput(bc.NewTxOutput(a.AssetID, a.Amount, acp.controlProgram, a.ReferenceData))
+}
+
+// insertControlProgramDelayed takes a template builder and an account
+// control program that hasn't been inserted to the database yet. It
+// registers callbacks on the TemplateBuilder so that all of the template's
+// account control programs are batch inserted if building the rest of
+// the template is successful.
+func (m *Manager) insertControlProgramDelayed(ctx context.Context, b *txbuilder.TemplateBuilder, acp *controlProgram) {
+	m.delayedACPsMu.Lock()
+	m.delayedACPs[b] = append(m.delayedACPs[b], acp)
+	m.delayedACPsMu.Unlock()
+
+	b.OnRollback(func() {
+		m.delayedACPsMu.Lock()
+		delete(m.delayedACPs, b)
+		m.delayedACPsMu.Unlock()
+	})
+	b.OnBuild(func() error {
+		m.delayedACPsMu.Lock()
+		acps := m.delayedACPs[b]
+		delete(m.delayedACPs, b)
+		m.delayedACPsMu.Unlock()
+
+		// Insert all of the account control programs at once.
+		if len(acps) == 0 {
+			return nil
+		}
+		return m.insertAccountControlProgram(ctx, acps...)
+	})
 }

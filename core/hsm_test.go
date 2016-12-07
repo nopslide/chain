@@ -9,6 +9,7 @@ import (
 	"chain/core/asset"
 	"chain/core/coretest"
 	"chain/core/mockhsm"
+	"chain/core/pin"
 	"chain/core/query"
 	"chain/core/txbuilder"
 	"chain/crypto/ed25519/chainkd"
@@ -22,9 +23,12 @@ func TestMockHSM(t *testing.T) {
 	_, db := pgtest.NewDB(t, pgtest.SchemaPath)
 	ctx := context.Background()
 	c := prottest.NewChain(t)
-	assets := asset.NewRegistry(db, c)
-	accounts := account.NewManager(db, c)
-	accounts.IndexAccounts(query.NewIndexer(db, c))
+	pinStore := pin.NewStore(db)
+	assets := asset.NewRegistry(db, c, pinStore)
+	accounts := account.NewManager(db, c, pinStore)
+	coretest.CreatePins(ctx, t, pinStore)
+	accounts.IndexAccounts(query.NewIndexer(db, c, pinStore))
+	go accounts.ProcessBlocks(ctx)
 	mockhsm := mockhsm.New(db)
 
 	xpub1, err := mockhsm.XCreate(ctx, "")
@@ -67,9 +71,10 @@ func TestMockHSM(t *testing.T) {
 
 	// Make a block so that UTXOs from the above tx are available to spend.
 	prottest.MakeBlock(t, c)
+	<-pinStore.PinWaiter(account.PinName, c.Height())
 
-	xferSrc1 := accounts.NewSpendAction(bc.AssetAmount{AssetID: asset1ID, Amount: 10}, acct1.ID, nil, nil, nil, nil)
-	xferSrc2 := accounts.NewSpendAction(bc.AssetAmount{AssetID: asset2ID, Amount: 20}, acct2.ID, nil, nil, nil, nil)
+	xferSrc1 := accounts.NewSpendAction(bc.AssetAmount{AssetID: asset1ID, Amount: 10}, acct1.ID, nil, nil)
+	xferSrc2 := accounts.NewSpendAction(bc.AssetAmount{AssetID: asset2ID, Amount: 20}, acct2.ID, nil, nil)
 	xferDest1 := accounts.NewControlAction(bc.AssetAmount{AssetID: asset2ID, Amount: 20}, acct1.ID, nil)
 	xferDest2 := accounts.NewControlAction(bc.AssetAmount{AssetID: asset1ID, Amount: 10}, acct2.ID, nil)
 	tmpl, err = txbuilder.Build(ctx, nil, []txbuilder.Action{xferSrc1, xferSrc2, xferDest1, xferDest2}, time.Now().Add(time.Minute))

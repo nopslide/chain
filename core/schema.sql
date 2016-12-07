@@ -116,60 +116,6 @@ $$;
 
 
 --
--- Name: cancel_reservation(integer); Type: FUNCTION; Schema: public; Owner: -
---
-
-CREATE FUNCTION cancel_reservation(inp_reservation_id integer) RETURNS void
-    LANGUAGE plpgsql
-    AS $$
-BEGIN
-    DELETE FROM reservations WHERE reservation_id = inp_reservation_id;
-END;
-$$;
-
-
---
--- Name: create_reservation(text, text, timestamp with time zone, text); Type: FUNCTION; Schema: public; Owner: -
---
-
-CREATE FUNCTION create_reservation(inp_asset_id text, inp_account_id text, inp_expiry timestamp with time zone, inp_idempotency_key text, OUT reservation_id integer, OUT already_existed boolean, OUT existing_change bigint) RETURNS record
-    LANGUAGE plpgsql
-    AS $$
-DECLARE
-    row RECORD;
-BEGIN
-    INSERT INTO reservations (asset_id, account_id, expiry, idempotency_key)
-        VALUES (inp_asset_id, inp_account_id, inp_expiry, inp_idempotency_key)
-        ON CONFLICT (idempotency_key) DO NOTHING
-        RETURNING reservations.reservation_id, FALSE AS already_existed, CAST(0 AS BIGINT) AS existing_change INTO row;
-    -- Iff the insert was successful, then a row is returned. The IF NOT FOUND check
-    -- will be true iff the insert failed because the row already exists.
-    IF NOT FOUND THEN
-        SELECT r.reservation_id, TRUE AS already_existed, r.change AS existing_change INTO STRICT row
-            FROM reservations r
-            WHERE r.idempotency_key = inp_idempotency_key;
-    END IF;
-    reservation_id := row.reservation_id;
-    already_existed := row.already_existed;
-    existing_change := row.existing_change;
-END;
-$$;
-
-
---
--- Name: expire_reservations(); Type: FUNCTION; Schema: public; Owner: -
---
-
-CREATE FUNCTION expire_reservations() RETURNS void
-    LANGUAGE plpgsql
-    AS $$
-BEGIN
-    DELETE FROM reservations WHERE expiry < CURRENT_TIMESTAMP;
-END;
-$$;
-
-
---
 -- Name: next_chain_id(text); Type: FUNCTION; Schema: public; Owner: -
 --
 
@@ -191,107 +137,6 @@ BEGIN
 	n := n | (shard_id << 10);
 	n := n | (seq_id);
 	RETURN prefix || b32enc_crockford(int8send(n));
-END;
-$$;
-
-
---
--- Name: reserve_utxo(text, bigint, timestamp with time zone, text); Type: FUNCTION; Schema: public; Owner: -
---
-
-CREATE FUNCTION reserve_utxo(inp_tx_hash text, inp_out_index bigint, inp_expiry timestamp with time zone, inp_idempotency_key text) RETURNS record
-    LANGUAGE plpgsql
-    AS $$
-DECLARE
-    res RECORD;
-    row RECORD;
-    ret RECORD;
-BEGIN
-    SELECT * FROM create_reservation(NULL, NULL, inp_expiry, inp_idempotency_key) INTO STRICT res;
-    IF res.already_existed THEN
-      SELECT res.reservation_id, res.already_existed, res.existing_change, CAST(0 AS BIGINT) AS amount, FALSE AS insufficient INTO ret;
-      RETURN ret;
-    END IF;
-
-    SELECT tx_hash, index, amount INTO row
-        FROM account_utxos u
-        WHERE inp_tx_hash = tx_hash
-              AND inp_out_index = index
-              AND reservation_id IS NULL
-        LIMIT 1
-        FOR UPDATE
-        SKIP LOCKED;
-    IF FOUND THEN
-        UPDATE account_utxos SET reservation_id = res.reservation_id
-            WHERE (tx_hash, index) = (row.tx_hash, row.index);
-    ELSE
-      PERFORM cancel_reservation(res.reservation_id);
-      res.reservation_id := 0;
-    END IF;
-
-    SELECT res.reservation_id, res.already_existed, EXISTS(SELECT tx_hash FROM account_utxos WHERE tx_hash = inp_tx_hash AND index = inp_out_index) INTO ret;
-    RETURN ret;
-END;
-$$;
-
-
---
--- Name: reserve_utxos(text, text, text, bigint, bigint, timestamp with time zone, text); Type: FUNCTION; Schema: public; Owner: -
---
-
-CREATE FUNCTION reserve_utxos(inp_asset_id text, inp_account_id text, inp_tx_hash text, inp_out_index bigint, inp_amt bigint, inp_expiry timestamp with time zone, inp_idempotency_key text) RETURNS record
-    LANGUAGE plpgsql
-    AS $$
-DECLARE
-    res RECORD;
-    row RECORD;
-    ret RECORD;
-    available BIGINT := 0;
-    unavailable BIGINT := 0;
-BEGIN
-    SELECT * FROM create_reservation(inp_asset_id, inp_account_id, inp_expiry, inp_idempotency_key) INTO STRICT res;
-    IF res.already_existed THEN
-      SELECT res.reservation_id, res.already_existed, res.existing_change, CAST(0 AS BIGINT) AS amount, FALSE AS insufficient INTO ret;
-      RETURN ret;
-    END IF;
-
-    LOOP
-        SELECT tx_hash, index, amount INTO row
-            FROM account_utxos u
-            WHERE asset_id = inp_asset_id
-                  AND inp_account_id = account_id
-                  AND (inp_tx_hash IS NULL OR inp_tx_hash = tx_hash)
-                  AND (inp_out_index IS NULL OR inp_out_index = index)
-                  AND reservation_id IS NULL
-            LIMIT 1
-            FOR UPDATE
-            SKIP LOCKED;
-        IF FOUND THEN
-            UPDATE account_utxos SET reservation_id = res.reservation_id
-                WHERE (tx_hash, index) = (row.tx_hash, row.index);
-            available := available + row.amount;
-            IF available >= inp_amt THEN
-                EXIT;
-            END IF;
-        ELSE
-            EXIT;
-        END IF;
-    END LOOP;
-
-    IF available < inp_amt THEN
-        SELECT SUM(change) AS change INTO STRICT row
-            FROM reservations
-            WHERE asset_id = inp_asset_id AND account_id = inp_account_id;
-        unavailable := row.change;
-        PERFORM cancel_reservation(res.reservation_id);
-        res.reservation_id := 0;
-    ELSE
-        UPDATE reservations SET change = available - inp_amt
-            WHERE reservation_id = res.reservation_id;
-    END IF;
-
-    SELECT res.reservation_id, res.already_existed, CAST(0 AS BIGINT) AS existing_change, available AS amount, (available+unavailable < inp_amt) AS insufficient INTO ret;
-    RETURN ret;
 END;
 $$;
 
@@ -330,7 +175,6 @@ CREATE SEQUENCE account_control_program_seq
 --
 
 CREATE TABLE account_control_programs (
-    id text DEFAULT next_chain_id('acp'::text) NOT NULL,
     signer_id text NOT NULL,
     key_index bigint NOT NULL,
     control_program bytea NOT NULL,
@@ -349,13 +193,8 @@ CREATE TABLE account_utxos (
     amount bigint NOT NULL,
     account_id text NOT NULL,
     control_program_index bigint NOT NULL,
-    reservation_id integer,
     control_program bytea NOT NULL,
-    metadata bytea NOT NULL,
-    confirmed_in bigint,
-    block_pos integer,
-    block_timestamp bigint,
-    expiry_height bigint
+    confirmed_in bigint NOT NULL
 );
 
 
@@ -456,6 +295,16 @@ CREATE SEQUENCE assets_key_index_seq
     NO MINVALUE
     NO MAXVALUE
     CACHE 1;
+
+
+--
+-- Name: block_processors; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE block_processors (
+    name text NOT NULL,
+    height bigint DEFAULT 0 NOT NULL
+);
 
 
 --
@@ -575,17 +424,6 @@ CREATE SEQUENCE pool_tx_sort_id_seq
 
 
 --
--- Name: pool_txs; Type: TABLE; Schema: public; Owner: -
---
-
-CREATE UNLOGGED TABLE pool_txs (
-    tx_hash text NOT NULL,
-    data bytea NOT NULL,
-    sort_id bigint DEFAULT nextval('pool_tx_sort_id_seq'::regclass) NOT NULL
-);
-
-
---
 -- Name: query_blocks; Type: TABLE; Schema: public; Owner: -
 --
 
@@ -605,20 +443,6 @@ CREATE SEQUENCE reservation_seq
     NO MINVALUE
     NO MAXVALUE
     CACHE 1;
-
-
---
--- Name: reservations; Type: TABLE; Schema: public; Owner: -
---
-
-CREATE TABLE reservations (
-    reservation_id integer DEFAULT nextval('reservation_seq'::regclass) NOT NULL,
-    asset_id text,
-    account_id text,
-    expiry timestamp with time zone DEFAULT '1970-01-01 00:00:00-08'::timestamp with time zone NOT NULL,
-    change bigint DEFAULT 0 NOT NULL,
-    idempotency_key text
-);
 
 
 --
@@ -679,7 +503,7 @@ CREATE TABLE snapshots (
 --
 
 CREATE TABLE submitted_txs (
-    tx_id text NOT NULL,
+    tx_hash bytea NOT NULL,
     height bigint NOT NULL,
     submitted_at timestamp without time zone DEFAULT now() NOT NULL
 );
@@ -694,7 +518,7 @@ CREATE TABLE txfeeds (
     alias text,
     filter text,
     after text,
-    client_token text NOT NULL
+    client_token text
 );
 
 
@@ -711,6 +535,14 @@ ALTER TABLE ONLY signers ALTER COLUMN key_index SET DEFAULT nextval('signers_key
 
 ALTER TABLE ONLY access_tokens
     ADD CONSTRAINT access_tokens_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: account_control_programs_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY account_control_programs
+    ADD CONSTRAINT account_control_programs_pkey PRIMARY KEY (control_program);
 
 
 --
@@ -802,6 +634,14 @@ ALTER TABLE ONLY assets
 
 
 --
+-- Name: block_processors_name_key; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY block_processors
+    ADD CONSTRAINT block_processors_name_key UNIQUE (name);
+
+
+--
 -- Name: blocks_height_key; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -866,43 +706,11 @@ ALTER TABLE ONLY mockhsm
 
 
 --
--- Name: pool_txs_pkey; Type: CONSTRAINT; Schema: public; Owner: -
---
-
-ALTER TABLE ONLY pool_txs
-    ADD CONSTRAINT pool_txs_pkey PRIMARY KEY (tx_hash);
-
-
---
--- Name: pool_txs_sort_id_key; Type: CONSTRAINT; Schema: public; Owner: -
---
-
-ALTER TABLE ONLY pool_txs
-    ADD CONSTRAINT pool_txs_sort_id_key UNIQUE (sort_id);
-
-
---
 -- Name: query_blocks_pkey; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
 ALTER TABLE ONLY query_blocks
     ADD CONSTRAINT query_blocks_pkey PRIMARY KEY (height);
-
-
---
--- Name: reservations_idempotency_key_key; Type: CONSTRAINT; Schema: public; Owner: -
---
-
-ALTER TABLE ONLY reservations
-    ADD CONSTRAINT reservations_idempotency_key_key UNIQUE (idempotency_key);
-
-
---
--- Name: reservations_pkey; Type: CONSTRAINT; Schema: public; Owner: -
---
-
-ALTER TABLE ONLY reservations
-    ADD CONSTRAINT reservations_pkey PRIMARY KEY (reservation_id);
 
 
 --
@@ -942,7 +750,7 @@ ALTER TABLE ONLY snapshots
 --
 
 ALTER TABLE ONLY submitted_txs
-    ADD CONSTRAINT submitted_txs_pkey PRIMARY KEY (tx_id);
+    ADD CONSTRAINT submitted_txs_pkey PRIMARY KEY (tx_hash);
 
 
 --
@@ -970,38 +778,10 @@ ALTER TABLE ONLY txfeeds
 
 
 --
--- Name: account_control_programs_control_program_idx; Type: INDEX; Schema: public; Owner: -
+-- Name: account_utxos_asset_id_account_id_confirmed_in_idx; Type: INDEX; Schema: public; Owner: -
 --
 
-CREATE INDEX account_control_programs_control_program_idx ON account_control_programs USING btree (control_program);
-
-
---
--- Name: account_utxos_account_id; Type: INDEX; Schema: public; Owner: -
---
-
-CREATE INDEX account_utxos_account_id ON account_utxos USING btree (account_id);
-
-
---
--- Name: account_utxos_account_id_asset_id_tx_hash_idx; Type: INDEX; Schema: public; Owner: -
---
-
-CREATE INDEX account_utxos_account_id_asset_id_tx_hash_idx ON account_utxos USING btree (account_id, asset_id, tx_hash);
-
-
---
--- Name: account_utxos_expiry_height_idx; Type: INDEX; Schema: public; Owner: -
---
-
-CREATE INDEX account_utxos_expiry_height_idx ON account_utxos USING btree (expiry_height) WHERE (confirmed_in IS NULL);
-
-
---
--- Name: account_utxos_reservation_id_idx; Type: INDEX; Schema: public; Owner: -
---
-
-CREATE INDEX account_utxos_reservation_id_idx ON account_utxos USING btree (reservation_id);
+CREATE INDEX account_utxos_asset_id_account_id_confirmed_in_idx ON account_utxos USING btree (asset_id, account_id, confirmed_in);
 
 
 --
@@ -1047,10 +827,10 @@ CREATE INDEX annotated_outputs_timespan_idx ON annotated_outputs USING gist (tim
 
 
 --
--- Name: annotated_txs_data; Type: INDEX; Schema: public; Owner: -
+-- Name: annotated_txs_data_idx; Type: INDEX; Schema: public; Owner: -
 --
 
-CREATE INDEX annotated_txs_data ON annotated_txs USING gin (data);
+CREATE INDEX annotated_txs_data_idx ON annotated_txs USING gin (data jsonb_path_ops);
 
 
 --
@@ -1068,20 +848,6 @@ CREATE INDEX query_blocks_timestamp_idx ON query_blocks USING btree ("timestamp"
 
 
 --
--- Name: reservations_asset_id_account_id_idx; Type: INDEX; Schema: public; Owner: -
---
-
-CREATE INDEX reservations_asset_id_account_id_idx ON reservations USING btree (asset_id, account_id);
-
-
---
--- Name: reservations_expiry; Type: INDEX; Schema: public; Owner: -
---
-
-CREATE INDEX reservations_expiry ON reservations USING btree (expiry);
-
-
---
 -- Name: signed_blocks_block_height_idx; Type: INDEX; Schema: public; Owner: -
 --
 
@@ -1096,16 +862,17 @@ CREATE INDEX signers_type_id_idx ON signers USING btree (type, id);
 
 
 --
--- Name: account_utxos_reservation_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
---
-
-ALTER TABLE ONLY account_utxos
-    ADD CONSTRAINT account_utxos_reservation_id_fkey FOREIGN KEY (reservation_id) REFERENCES reservations(reservation_id) ON DELETE SET NULL;
-
-
---
 -- PostgreSQL database dump complete
 --
 
 insert into migrations (filename, hash) values ('2016-10-17.0.core.schema-snapshot.sql', 'cff5210e2d6af410719c223a76443f73c5c12fe875f0efecb9a0a5937cf029cd');
 insert into migrations (filename, hash) values ('2016-10-19.0.core.add-core-id.sql', '9353da072a571d7a633140f2a44b6ac73ffe9e27223f7c653ccdef8df3e8139e');
+insert into migrations (filename, hash) values ('2016-10-31.0.core.add-block-processors.sql', '9e9488e0039337967ef810b09a8f7822e23b3918a49a6308f02db24ddf3e490f');
+insert into migrations (filename, hash) values ('2016-11-07.0.core.remove-client-token-not-null.sql', 'fbae17999936bfc88a537f27fe72ae2de501894f3ea5d9488f3298fd05c59700');
+insert into migrations (filename, hash) values ('2016-11-09.0.utxodb.drop-reservations.sql', '99bbf49814a12d2fee7430710d493958dc634e3395ac8c4839f084116a3e58be');
+insert into migrations (filename, hash) values ('2016-11-10.0.txdb.drop-pool-txs.sql', 'c52f610d5bd471cde5fbc083681e201f026b0cab89e7beeaa6a071ebbb99ff69');
+insert into migrations (filename, hash) values ('2016-11-16.0.account.drop-cp-id.sql', '149dd9ff2107e12452180bb73716a0985547bae843e5f99e5441717d6ec64a00');
+insert into migrations (filename, hash) values ('2016-11-18.0.account.confirmed-utxos.sql', 'b01e126edfcfe97f94eeda46f5a0eab6752e907104cecf247e90886f92795e94');
+insert into migrations (filename, hash) values ('2016-11-22.0.account.utxos-indexes.sql', 'f3ea43f592cb06a36b040f0b0b9626ee9174d26d36abef44e68114d0c0aace98');
+insert into migrations (filename, hash) values ('2016-11-23.0.query.jsonb-path-ops.sql', 'adb15b9a6b7b223a17dbfd5f669e44c500b343568a563f87e1ae67ba0f938d55');
+insert into migrations (filename, hash) values ('2016-11-28.0.core.submitted-txs-hash.sql', 'cabbd7fd79a2b672b2d3c854783bde3b8245fe666c50261c3335a0c0501ff2ea');

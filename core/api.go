@@ -13,8 +13,10 @@ import (
 	"chain/core/accesstoken"
 	"chain/core/account"
 	"chain/core/asset"
+	"chain/core/config"
 	"chain/core/leader"
 	"chain/core/mockhsm"
+	"chain/core/pin"
 	"chain/core/query"
 	"chain/core/rpc"
 	"chain/core/txbuilder"
@@ -51,13 +53,14 @@ var (
 type Handler struct {
 	Chain         *protocol.Chain
 	Store         *txdb.Store
+	PinStore      *pin.Store
 	Assets        *asset.Registry
 	Accounts      *account.Manager
 	HSM           *mockhsm.HSM
 	Indexer       *query.Indexer
 	TxFeeds       *txfeed.Tracker
 	AccessTokens  *accesstoken.CredentialStore
-	Config        *Config
+	Config        *config.Config
 	DB            pg.DB
 	Addr          string
 	AltAuth       func(*http.Request) bool
@@ -79,7 +82,7 @@ type RequestLimit struct {
 }
 
 func maxBytes(h http.Handler) http.Handler {
-	const maxReqSize = 1e5 // 100kB
+	const maxReqSize = 1e6 // 1MB
 	return http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
 		// A block can easily be bigger than maxReqSize, but everything
 		// else should be pretty small.
@@ -187,27 +190,6 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	h.once.Do(h.init)
 
 	h.handler.ServeHTTP(w, r)
-}
-
-// Config encapsulates Core-level, persistent configuration options.
-type Config struct {
-	ID                   string  `json:"id"`
-	IsSigner             bool    `json:"is_signer"`
-	IsGenerator          bool    `json:"is_generator"`
-	BlockchainID         bc.Hash `json:"blockchain_id"`
-	GeneratorURL         string  `json:"generator_url"`
-	GeneratorAccessToken string  `json:"generator_access_token"`
-	ConfiguredAt         time.Time
-	BlockPub             string         `json:"block_pub"`
-	Signers              []ConfigSigner `json:"block_signer_urls"`
-	Quorum               int
-	MaxIssuanceWindow    time.Duration
-}
-
-type ConfigSigner struct {
-	AccessToken string        `json:"access_token"`
-	Pubkey      json.HexBytes `json:"pubkey"`
-	URL         string        `json:"url"`
 }
 
 // Used as a request object for api queries

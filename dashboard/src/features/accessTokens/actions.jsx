@@ -1,10 +1,10 @@
 import {
-  baseFormActions,
+  baseCreateActions,
   baseListActions
 } from 'features/shared/actions'
 
 import React from 'react'
-import CreateModal from './components/CreateModal/CreateModal'
+import CreateModal from './components/CreateModal'
 
 const makeCreateModal = token => {
   return <CreateModal token={token.token} />
@@ -17,7 +17,7 @@ let actions = {
       className: 'AccessToken',
       requiredParams: { type: 'client'},
     }),
-    ...baseFormActions('client_access_token', {
+    ...baseCreateActions('client_access_token', {
       listPath: '/access_tokens/client',
       className: 'AccessToken',
       createModal: makeCreateModal,
@@ -29,7 +29,7 @@ let actions = {
       className: 'AccessToken',
       requiredParams: { type: 'network'},
     }),
-    ...baseFormActions('network_access_token', {
+    ...baseCreateActions('network_access_token', {
       listPath: '/access_tokens/network',
       className: 'AccessToken',
       createModal: makeCreateModal,

@@ -10,6 +10,7 @@ import (
 	"chain/core/account"
 	"chain/core/asset"
 	"chain/core/coretest"
+	"chain/core/pin"
 	"chain/core/query"
 	"chain/core/txbuilder"
 	"chain/database/pg"
@@ -25,47 +26,52 @@ func TestAccountSourceReserve(t *testing.T) {
 		_, db    = pgtest.NewDB(t, pgtest.SchemaPath)
 		ctx      = context.Background()
 		c        = prottest.NewChain(t)
-		accounts = account.NewManager(db, c)
-		assets   = asset.NewRegistry(db, c)
-		indexer  = query.NewIndexer(db, c)
+		pinStore = pin.NewStore(db)
+		accounts = account.NewManager(db, c, pinStore)
+		assets   = asset.NewRegistry(db, c, pinStore)
+		indexer  = query.NewIndexer(db, c, pinStore)
 
 		accID = coretest.CreateAccount(ctx, t, accounts, "", nil)
 		asset = coretest.CreateAsset(ctx, t, assets, nil, "", nil)
 		out   = coretest.IssueAssets(ctx, t, c, assets, accounts, asset, 2, accID)
 	)
 
+	coretest.CreatePins(ctx, t, pinStore)
 	// Make a block so that account UTXOs are available to spend.
 	assets.IndexAssets(indexer)
 	accounts.IndexAccounts(indexer)
+	go accounts.ProcessBlocks(ctx)
 	prottest.MakeBlock(t, c)
+	<-pinStore.PinWaiter(account.PinName, c.Height())
 
 	assetAmount1 := bc.AssetAmount{
 		AssetID: asset,
 		Amount:  1,
 	}
-	source := accounts.NewSpendAction(assetAmount1, accID, nil, nil, nil, nil)
+	source := accounts.NewSpendAction(assetAmount1, accID, nil, nil)
 
-	buildResult, err := source.Build(ctx, time.Now().Add(time.Minute))
+	var builder txbuilder.TemplateBuilder
+	err := source.Build(ctx, time.Now().Add(time.Minute), &builder)
 	if err != nil {
 		t.Log(errors.Stack(err))
 		t.Fatal(err)
 	}
+	tpl, err := builder.Build()
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	wantTxIns := []*bc.TxInput{bc.NewSpendInput(out.Hash, out.Index, nil, out.AssetID, out.Amount, out.ControlProgram, nil)}
-
-	if !reflect.DeepEqual(buildResult.Inputs, wantTxIns) {
-		t.Errorf("build txins\ngot:\n\t%+v\nwant:\n\t%+v", buildResult.Inputs, wantTxIns)
+	if !reflect.DeepEqual(tpl.Transaction.Inputs, wantTxIns) {
+		t.Errorf("build txins\ngot:\n\t%+v\nwant:\n\t%+v", tpl.Transaction.Inputs, wantTxIns)
 	}
-
-	if len(buildResult.Outputs) != 1 {
+	if len(tpl.Transaction.Outputs) != 1 {
 		t.Errorf("expected 1 change output")
 	}
-
-	if buildResult.Outputs[0].Amount != 1 {
+	if tpl.Transaction.Outputs[0].Amount != 1 {
 		t.Errorf("expected change amount to be 1")
 	}
-
-	if !programInAccount(ctx, t, db, buildResult.Outputs[0].ControlProgram, accID) {
+	if !programInAccount(ctx, t, db, tpl.Transaction.Outputs[0].ControlProgram, accID) {
 		t.Errorf("expected change control program to belong to account")
 	}
 }
@@ -75,31 +81,41 @@ func TestAccountSourceUTXOReserve(t *testing.T) {
 		_, db    = pgtest.NewDB(t, pgtest.SchemaPath)
 		ctx      = context.Background()
 		c        = prottest.NewChain(t)
-		assets   = asset.NewRegistry(db, c)
-		accounts = account.NewManager(db, c)
-		indexer  = query.NewIndexer(db, c)
+		pinStore = pin.NewStore(db)
+		accounts = account.NewManager(db, c, pinStore)
+		assets   = asset.NewRegistry(db, c, pinStore)
+		indexer  = query.NewIndexer(db, c, pinStore)
 
 		accID = coretest.CreateAccount(ctx, t, accounts, "", nil)
 		asset = coretest.CreateAsset(ctx, t, assets, nil, "", nil)
 		out   = coretest.IssueAssets(ctx, t, c, assets, accounts, asset, 2, accID)
 	)
 
+	coretest.CreatePins(ctx, t, pinStore)
 	// Make a block so that account UTXOs are available to spend.
 	assets.IndexAssets(indexer)
 	accounts.IndexAccounts(indexer)
+	go accounts.ProcessBlocks(ctx)
 	prottest.MakeBlock(t, c)
+	<-pinStore.PinWaiter(account.PinName, c.Height())
 
 	source := accounts.NewSpendUTXOAction(out.Outpoint)
-	buildResult, err := source.Build(ctx, time.Now().Add(time.Minute))
+
+	var builder txbuilder.TemplateBuilder
+	err := source.Build(ctx, time.Now().Add(time.Minute), &builder)
 	if err != nil {
 		t.Log(errors.Stack(err))
+		t.Fatal(err)
+	}
+	tpl, err := builder.Build()
+	if err != nil {
 		t.Fatal(err)
 	}
 
 	wantTxIns := []*bc.TxInput{bc.NewSpendInput(out.Hash, out.Index, nil, out.AssetID, out.Amount, out.ControlProgram, nil)}
 
-	if !reflect.DeepEqual(buildResult.Inputs, wantTxIns) {
-		t.Errorf("build txins\ngot:\n\t%+v\nwant:\n\t%+v", buildResult.Inputs, wantTxIns)
+	if !reflect.DeepEqual(tpl.Transaction.Inputs, wantTxIns) {
+		t.Errorf("build txins\ngot:\n\t%+v\nwant:\n\t%+v", tpl.Transaction.Inputs, wantTxIns)
 	}
 }
 
@@ -108,9 +124,10 @@ func TestAccountSourceReserveIdempotency(t *testing.T) {
 		_, db    = pgtest.NewDB(t, pgtest.SchemaPath)
 		ctx      = context.Background()
 		c        = prottest.NewChain(t)
-		assets   = asset.NewRegistry(db, c)
-		accounts = account.NewManager(db, c)
-		indexer  = query.NewIndexer(db, c)
+		pinStore = pin.NewStore(db)
+		accounts = account.NewManager(db, c, pinStore)
+		assets   = asset.NewRegistry(db, c, pinStore)
+		indexer  = query.NewIndexer(db, c, pinStore)
 
 		accID        = coretest.CreateAccount(ctx, t, accounts, "", nil)
 		asset        = coretest.CreateAsset(ctx, t, assets, nil, "", nil)
@@ -124,26 +141,35 @@ func TestAccountSourceReserveIdempotency(t *testing.T) {
 		// An idempotency key that both reservations should use.
 		clientToken1 = "a-unique-idempotency-key"
 		clientToken2 = "another-unique-idempotency-key"
-		wantSrc      = accounts.NewSpendAction(assetAmount1, accID, nil, nil, nil, &clientToken1)
-		gotSrc       = accounts.NewSpendAction(assetAmount1, accID, nil, nil, nil, &clientToken1)
-		separateSrc  = accounts.NewSpendAction(assetAmount1, accID, nil, nil, nil, &clientToken2)
+		wantSrc      = accounts.NewSpendAction(assetAmount1, accID, nil, &clientToken1)
+		gotSrc       = accounts.NewSpendAction(assetAmount1, accID, nil, &clientToken1)
+		separateSrc  = accounts.NewSpendAction(assetAmount1, accID, nil, &clientToken2)
 	)
 
+	coretest.CreatePins(ctx, t, pinStore)
 	// Make a block so that account UTXOs are available to spend.
 	assets.IndexAssets(indexer)
 	accounts.IndexAccounts(indexer)
+	go accounts.ProcessBlocks(ctx)
 	prottest.MakeBlock(t, c)
+	<-pinStore.PinWaiter(account.PinName, c.Height())
 
 	reserveFunc := func(source txbuilder.Action) []*bc.TxInput {
-		buildResult, err := source.Build(ctx, time.Now().Add(time.Minute))
+		var builder txbuilder.TemplateBuilder
+
+		err := source.Build(ctx, time.Now().Add(time.Minute), &builder)
 		if err != nil {
 			t.Log(errors.Stack(err))
 			t.Fatal(err)
 		}
-		if len(buildResult.Inputs) != 1 {
-			t.Fatalf("expected 1 result utxo")
+		tpl, err := builder.Build()
+		if err != nil {
+			t.Fatal(err)
 		}
-		return buildResult.Inputs
+		if len(tpl.Transaction.Inputs) != 1 {
+			t.Fatalf("got %d result utxo, expected 1 result utxo", len(tpl.Transaction.Inputs))
+		}
+		return tpl.Transaction.Inputs
 	}
 
 	var (
@@ -158,54 +184,6 @@ func TestAccountSourceReserveIdempotency(t *testing.T) {
 	// The third reservation attempt should be distinct and not the same as the first two.
 	if reflect.DeepEqual(separate, want) {
 		t.Errorf("reserve result\ngot:\n\t%+v\ndo not want:\n\t%+v", separate, want)
-	}
-}
-
-func TestAccountSourceWithTxHash(t *testing.T) {
-	var (
-		_, db    = pgtest.NewDB(t, pgtest.SchemaPath)
-		ctx      = context.Background()
-		c        = prottest.NewChain(t)
-		assets   = asset.NewRegistry(db, c)
-		accounts = account.NewManager(db, c)
-		indexer  = query.NewIndexer(db, c)
-
-		acc      = coretest.CreateAccount(ctx, t, accounts, "", nil)
-		asset    = coretest.CreateAsset(ctx, t, assets, nil, "", nil)
-		assetAmt = bc.AssetAmount{AssetID: asset, Amount: 1}
-		utxos    = 4
-		srcTxs   []bc.Hash
-	)
-
-	for i := 0; i < utxos; i++ {
-		o := coretest.IssueAssets(ctx, t, c, assets, accounts, asset, 1, acc)
-		srcTxs = append(srcTxs, o.Outpoint.Hash)
-	}
-
-	// Make a block so that account UTXOs are available to spend.
-	assets.IndexAssets(indexer)
-	accounts.IndexAccounts(indexer)
-	prottest.MakeBlock(t, c)
-
-	for i := 0; i < utxos; i++ {
-		theTxHash := srcTxs[i]
-		source := accounts.NewSpendAction(assetAmt, acc, &theTxHash, nil, nil, nil)
-
-		buildResult, err := source.Build(ctx, time.Now().Add(time.Minute))
-		if err != nil {
-			t.Log(errors.Stack(err))
-			t.Fatal(err)
-		}
-
-		if len(buildResult.Inputs) != 1 {
-			t.Fatalf("expected 1 result utxo")
-		}
-
-		got := buildResult.Inputs[0].Outpoint()
-		want := bc.Outpoint{Hash: theTxHash, Index: 0}
-		if got != want {
-			t.Errorf("reserved utxo outpoint got=%v want=%v", got, want)
-		}
 	}
 }
 

@@ -16,9 +16,10 @@ This guide will walk you through the basic types of control programs available i
 
 ### Sample Code
 
-All code samples in this guide are extracted from a single Java file.
+All code samples in this guide can be viewed in a single, runnable script. Available languages:
 
-<a href="../examples/java/ControlPrograms.java" class="downloadBtn btn success" target="\_blank">View Sample Code</a>
+- [Java](../examples/java/ControlPrograms.java)
+- [Ruby](../examples/ruby/control_programs.rb)
 
 ## Account control programs
 
@@ -30,11 +31,11 @@ Although all control programs in one account are controlled by keys derived from
 
 If Alice wishes to be paid gold by an external party (Bob), she first creates a new control program in her account:
 
-$code ../examples/java/ControlPrograms.java create-control-program
+$code create-control-program ../examples/java/ControlPrograms.java ../examples/ruby/control_programs.rb
 
 She then delivers the control program to Bob, who provides it to the transaction builder:
 
-$code ../examples/java/ControlPrograms.java build-transaction
+$code build-transaction ../examples/java/ControlPrograms.java ../examples/ruby/control_programs.rb
 
 ## Retirement control programs
 
@@ -44,7 +45,7 @@ A retirement control program is a very simple control program with a single pred
 
 To retire units of gold from Alice's account, we use the `SpendFromAccount` and `Retire` actions on the `Transaction.QueryBuilder`, which prompts Chain Core to create the retirement control program and spent to it from Alice's account.
 
-$code ../examples/java/ControlPrograms.java retire
+$code retire ../examples/java/ControlPrograms.java ../examples/ruby/control_programs.rb
 
 ## Custom control programs
 

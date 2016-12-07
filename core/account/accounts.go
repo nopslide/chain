@@ -9,39 +9,50 @@ import (
 	"time"
 
 	"github.com/golang/groupcache/lru"
+	"github.com/lib/pq"
 
-	"chain/core/account/utxodb"
+	"chain/core/pin"
 	"chain/core/signers"
+	"chain/core/txbuilder"
 	"chain/crypto/ed25519/chainkd"
 	"chain/database/pg"
 	"chain/database/sql"
 	"chain/errors"
+	"chain/log"
 	"chain/protocol"
 	"chain/protocol/vmutil"
 )
 
-const maxAccountCache = 100
+const maxAccountCache = 1000
 
 var ErrDuplicateAlias = errors.New("duplicate account alias")
 
-func NewManager(db *sql.DB, chain *protocol.Chain) *Manager {
+func NewManager(db *sql.DB, chain *protocol.Chain, pinStore *pin.Store) *Manager {
 	return &Manager{
-		db:     db,
-		chain:  chain,
-		utxoDB: &utxodb.Reserver{DB: db},
-		cache:  lru.New(maxAccountCache),
+		db:          db,
+		chain:       chain,
+		utxoDB:      newReserver(db, chain, pinStore),
+		pinStore:    pinStore,
+		cache:       lru.New(maxAccountCache),
+		aliasCache:  lru.New(maxAccountCache),
+		delayedACPs: make(map[*txbuilder.TemplateBuilder][]*controlProgram),
 	}
 }
 
 // Manager stores accounts and their associated control programs.
 type Manager struct {
-	db      pg.DB
-	chain   *protocol.Chain
-	utxoDB  *utxodb.Reserver
-	indexer Saver
+	db       *sql.DB
+	chain    *protocol.Chain
+	utxoDB   *reserver
+	indexer  Saver
+	pinStore *pin.Store
 
-	cacheMu sync.Mutex
-	cache   *lru.Cache
+	cacheMu    sync.Mutex
+	cache      *lru.Cache
+	aliasCache *lru.Cache
+
+	delayedACPsMu sync.Mutex
+	delayedACPs   map[*txbuilder.TemplateBuilder][]*controlProgram
 
 	acpMu        sync.Mutex
 	acpIndexNext uint64 // next acp index in our block
@@ -50,13 +61,24 @@ type Manager struct {
 
 func (m *Manager) IndexAccounts(indexer Saver) {
 	m.indexer = indexer
-	m.chain.AddBlockCallback(m.indexAccountUTXOs)
 }
 
 // ExpireReservations removes reservations that have expired periodically.
 // It blocks until the context is canceled.
 func (m *Manager) ExpireReservations(ctx context.Context, period time.Duration) {
-	m.utxoDB.ExpireReservations(ctx, period)
+	ticks := time.Tick(period)
+	for {
+		select {
+		case <-ctx.Done():
+			log.Messagef(ctx, "Deposed, ExpireReservations exiting")
+			return
+		case <-ticks:
+			err := m.utxoDB.ExpireReservations(ctx)
+			if err != nil {
+				log.Error(ctx, err)
+			}
+		}
+	}
 }
 
 type Account struct {
@@ -109,14 +131,25 @@ func (m *Manager) Create(ctx context.Context, xpubs []string, quorum int, alias 
 
 // FindByAlias retrieves an account's Signer record by its alias
 func (m *Manager) FindByAlias(ctx context.Context, alias string) (*signers.Signer, error) {
-	const q = `SELECT account_id FROM accounts WHERE alias=$1`
 	var accountID string
-	err := m.db.QueryRow(ctx, q, alias).Scan(&accountID)
-	if err == stdsql.ErrNoRows {
-		return nil, errors.WithDetailf(pg.ErrUserInputNotFound, "alias: %s", alias)
-	}
-	if err != nil {
-		return nil, errors.Wrap(err)
+
+	m.cacheMu.Lock()
+	cachedID, ok := m.aliasCache.Get(alias)
+	m.cacheMu.Unlock()
+	if ok {
+		accountID = cachedID.(string)
+	} else {
+		const q = `SELECT account_id FROM accounts WHERE alias=$1`
+		err := m.db.QueryRow(ctx, q, alias).Scan(&accountID)
+		if err == stdsql.ErrNoRows {
+			return nil, errors.WithDetailf(pg.ErrUserInputNotFound, "alias: %s", alias)
+		}
+		if err != nil {
+			return nil, errors.Wrap(err)
+		}
+		m.cacheMu.Lock()
+		m.aliasCache.Add(alias, accountID)
+		m.cacheMu.Unlock()
 	}
 	return m.findByID(ctx, accountID)
 }
@@ -139,9 +172,14 @@ func (m *Manager) findByID(ctx context.Context, id string) (*signers.Signer, err
 	return account, nil
 }
 
-// CreateControlProgram creates a control program
-// that is tied to the Account and stores it in the database.
-func (m *Manager) CreateControlProgram(ctx context.Context, accountID string, change bool) ([]byte, error) {
+type controlProgram struct {
+	accountID      string
+	keyIndex       uint64
+	controlProgram []byte
+	change         bool
+}
+
+func (m *Manager) createControlProgram(ctx context.Context, accountID string, change bool) (*controlProgram, error) {
 	account, err := m.findByID(ctx, accountID)
 	if err != nil {
 		return nil, err
@@ -159,20 +197,48 @@ func (m *Manager) CreateControlProgram(ctx context.Context, accountID string, ch
 	if err != nil {
 		return nil, err
 	}
-	err = m.insertAccountControlProgram(ctx, account.ID, idx, control, change)
+	return &controlProgram{
+		accountID:      account.ID,
+		keyIndex:       idx,
+		controlProgram: control,
+		change:         change,
+	}, nil
+}
+
+// CreateControlProgram creates a control program
+// that is tied to the Account and stores it in the database.
+func (m *Manager) CreateControlProgram(ctx context.Context, accountID string, change bool) ([]byte, error) {
+	cp, err := m.createControlProgram(ctx, accountID, change)
 	if err != nil {
 		return nil, err
 	}
 
-	return control, nil
+	err = m.insertAccountControlProgram(ctx, cp)
+	if err != nil {
+		return nil, err
+	}
+	return cp.controlProgram, nil
 }
 
-func (m *Manager) insertAccountControlProgram(ctx context.Context, accountID string, idx uint64, control []byte, change bool) error {
+func (m *Manager) insertAccountControlProgram(ctx context.Context, progs ...*controlProgram) error {
 	const q = `
 		INSERT INTO account_control_programs (signer_id, key_index, control_program, change)
-		VALUES($1, $2, $3, $4)
+		SELECT unnest($1::text[]), unnest($2::bigint[]), unnest($3::bytea[]), unnest($4::boolean[])
 	`
-	_, err := m.db.Exec(ctx, q, accountID, idx, control, change)
+	var (
+		accountIDs   pq.StringArray
+		keyIndexes   pq.Int64Array
+		controlProgs pq.ByteaArray
+		change       pq.BoolArray
+	)
+	for _, p := range progs {
+		accountIDs = append(accountIDs, p.accountID)
+		keyIndexes = append(keyIndexes, int64(p.keyIndex))
+		controlProgs = append(controlProgs, p.controlProgram)
+		change = append(change, p.change)
+	}
+
+	_, err := m.db.Exec(ctx, q, accountIDs, keyIndexes, controlProgs, change)
 	return errors.Wrap(err)
 }
 

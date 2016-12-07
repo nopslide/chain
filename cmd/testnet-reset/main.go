@@ -3,12 +3,18 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"io"
 	"log"
+	"net/http"
 	"os"
+	"strings"
 	"time"
 
 	"chain/core/rpc"
+	"chain/env"
 )
+
+var scheduled = env.Bool("SCHEDULED", true)
 
 type core struct {
 	netTok string
@@ -39,10 +45,26 @@ func coreEnv(prefix string) (*rpc.Client, core) {
 func main() {
 	log.SetFlags(0)
 	ctx := context.Background()
+	env.Parse()
+
+	cur := time.Now()
+	max := cur.Add(time.Hour).Weekday()
+	min := cur.Add(-1 * time.Hour).Weekday()
+	if *scheduled && (min != time.Saturday || max != time.Sunday) {
+		log.Println("only run Sunday at midnight +/- an hour")
+		os.Exit(0)
+	}
 
 	gen, genCore := coreEnv("GENERATOR")
 	sig1, sig1Core := coreEnv("SIGNER1")
 	sig2, sig2Core := coreEnv("SIGNER2")
+
+	if os.Getenv("HEROKU_API_USER") == "" || os.Getenv("HEROKU_API_KEY") == "" {
+		log.Fatal("must set heroku user credentials")
+	}
+
+	// scale down testnet bot
+	updateHerokuApp("/chain-core-ccte/formation", `{"updates":[{"type":"web", "quantity":0}]}`)
 
 	empty := json.RawMessage("{}")
 	must(gen.Call(ctx, "/reset", &empty, nil))
@@ -94,6 +116,24 @@ func main() {
 		"generator_url":          gen.BaseURL,
 		"generator_access_token": genCore.netTok,
 	}, nil))
+
+	// update blockchain id and scale up bot
+	updateHerokuApp("/chain-testnet-info/config-vars", `{"BLOCKCHAIN_ID":"`+resp.BlockchainID+`"}`)
+	updateHerokuApp("/chain-core-ccte/config-vars", `{"BLOCKCHAIN_ID":"`+resp.BlockchainID+`"}`)
+	updateHerokuApp("/chain-core-ccte/formation", `{"updates":[{"type":"web", "quantity":1}]}`)
+}
+
+func updateHerokuApp(endpoint, body string) {
+	r := strings.NewReader(body)
+	req, err := http.NewRequest("PATCH", "https://api.heroku.com/apps"+endpoint, r)
+	must(err)
+	req.Header.Add("Accept", "application/vnd.heroku+json; version=3")
+	req.Header.Add("Content-type", "application/json")
+	req.SetBasicAuth(os.Getenv("HEROKU_API_USER"), os.Getenv("HEROKU_API_KEY"))
+	resp, err := http.DefaultClient.Do(req)
+	must(err)
+	defer resp.Body.Close()
+	io.Copy(os.Stdout, resp.Body)
 }
 
 func must(err error) {

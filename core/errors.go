@@ -5,9 +5,9 @@ import (
 
 	"chain/core/accesstoken"
 	"chain/core/account"
-	"chain/core/account/utxodb"
 	"chain/core/asset"
 	"chain/core/blocksigner"
+	"chain/core/config"
 	"chain/core/mockhsm"
 	"chain/core/query"
 	"chain/core/query/filter"
@@ -30,15 +30,29 @@ type errorInfo struct {
 
 type detailedError struct {
 	errorInfo
-	Detail    string      `json:"detail,omitempty"`
-	Data      interface{} `json:"data,omitempty"`
-	Temporary bool        `json:"temporary"`
+	Detail    string                 `json:"detail,omitempty"`
+	Data      map[string]interface{} `json:"data,omitempty"`
+	Temporary bool                   `json:"temporary"`
 }
 
-var temporaryErrorCodes = map[string]bool{
-	"CH000": true, // internal server error
-	"CH001": true, // request timed out
-	"CH761": true, // outputs currently reserved
+func isTemporary(info errorInfo, err error) bool {
+	switch info.ChainCode {
+	case "CH000": // internal server error
+		return true
+	case "CH001": // request timed out
+		return true
+	case "CH761": // outputs currently reserved
+		return true
+	case "CH706": // 1 or more action errors
+		errs := errors.Data(err)["actions"].([]detailedError)
+		temp := true
+		for _, actionErr := range errs {
+			temp = temp && isTemporary(actionErr.errorInfo, nil)
+		}
+		return temp
+	default:
+		return false
+	}
 }
 
 var (
@@ -59,6 +73,7 @@ var (
 		errRateLimited:               errorInfo{429, "CH007", "Request limit exceeded"},
 		errLeaderElection:            errorInfo{503, "CH008", "Electing a new leader for the core; try again soon"},
 		errNotAuthenticated:          errorInfo{401, "CH009", "Request could not be authenticated"},
+		txbuilder.ErrMissingFields:   errorInfo{400, "CH010", "One or more fields are missing"},
 		asset.ErrDuplicateAlias:      errorInfo{400, "CH050", "Alias already exists"},
 		account.ErrDuplicateAlias:    errorInfo{400, "CH050", "Alias already exists"},
 		txfeed.ErrDuplicateAlias:     errorInfo{400, "CH050", "Alias already exists"},
@@ -67,13 +82,13 @@ var (
 		// Core error namespace
 		errUnconfigured:                errorInfo{400, "CH100", "This core still needs to be configured"},
 		errAlreadyConfigured:           errorInfo{400, "CH101", "This core has already been configured"},
-		errBadGenerator:                errorInfo{400, "CH102", "Generator URL returned an invalid response"},
+		config.ErrBadGenerator:         errorInfo{400, "CH102", "Generator URL returned an invalid response"},
 		errBadBlockPub:                 errorInfo{400, "CH103", "Provided Block XPub is invalid"},
 		rpc.ErrWrongNetwork:            errorInfo{502, "CH104", "A peer core is operating on a different blockchain network"},
 		protocol.ErrTheDistantFuture:   errorInfo{400, "CH105", "Requested height is too far ahead"},
-		errBadSignerURL:                errorInfo{400, "CH106", "Block signer URL is invalid"},
-		errBadSignerPubkey:             errorInfo{400, "CH107", "Block signer pubkey is invalid"},
-		errBadQuorum:                   errorInfo{400, "CH108", "Quorum must be greater than 0 if there are signers"},
+		config.ErrBadSignerURL:         errorInfo{400, "CH106", "Block signer URL is invalid"},
+		config.ErrBadSignerPubkey:      errorInfo{400, "CH107", "Block signer pubkey is invalid"},
+		config.ErrBadQuorum:            errorInfo{400, "CH108", "Quorum must be greater than 0 if there are signers"},
 		errProdReset:                   errorInfo{400, "CH110", "Reset can only be called in a development system"},
 		errNoClientTokens:              errorInfo{400, "CH120", "Cannot enable client authentication with no client tokens"},
 		blocksigner.ErrConsensusChange: errorInfo{400, "CH150", "Refuse to sign block with consensus change"},
@@ -115,8 +130,8 @@ var (
 		txbuilder.ErrNoTxSighashCommitment: errorInfo{400, "CH736", "Transaction is not final, additional actions still allowed"},
 
 		// account action error namespace (76x)
-		utxodb.ErrInsufficient: errorInfo{400, "CH760", "Insufficient funds for tx"},
-		utxodb.ErrReserved:     errorInfo{400, "CH761", "Some outputs are reserved; try again"},
+		account.ErrInsufficient: errorInfo{400, "CH760", "Insufficient funds for tx"},
+		account.ErrReserved:     errorInfo{400, "CH761", "Some outputs are reserved; try again"},
 
 		// Mock HSM error namespace (80x)
 		mockhsm.ErrInvalidAfter:         errorInfo{400, "CH801", "Invalid `after` in query"},
@@ -148,7 +163,7 @@ func errInfo(err error) (body detailedError, info errorInfo) {
 		errorInfo: info,
 		Detail:    errors.Detail(err),
 		Data:      errors.Data(err),
-		Temporary: temporaryErrorCodes[info.ChainCode],
+		Temporary: isTemporary(info, err),
 	}
 	return body, info
 }

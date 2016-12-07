@@ -40,11 +40,14 @@ public class ControlProgram {
    */
   public static BatchResponse<ControlProgram> createBatch(Client client, List<Builder> programs)
       throws ChainException {
-    return client.batchRequest("create-control-program", programs, ControlProgram.class, APIException.class);
+    return client.batchRequest(
+        "create-control-program", programs, ControlProgram.class, APIException.class);
   }
 
   /**
-   * A builder class for control programs.
+   * ControlProgram.Builder utilizes the builder pattern to create {@link ControlProgram} objects.<br>
+   * <strong>If creating an account control program, either {@link #controlWithAccountById(String)}
+   * or {@link #controlWithAccountByAlias(String)} must be called before {@link #create(Client)}.</strong>
    */
   public static class Builder {
     /**
@@ -81,7 +84,8 @@ public class ControlProgram {
 
     /**
      * Specifies an account to link to the control program.<br>
-     * An id is used to distinguish the account.
+     * An id is used to distinguish the account.<br>
+     * <strong>If creating an account control program, this or {@link #controlWithAccountByAlias(String)} must be called before {@link #create(Client)}.</strong>
      * @param accountId id of the account
      * @return updated builder object
      */
@@ -93,7 +97,8 @@ public class ControlProgram {
 
     /**
      * Specifies an account to link to the control program.<br>
-     * An alias is used to distinguish the account.
+     * An alias is used to distinguish the account.<br>
+     * <strong>If creating an account control program, this or {@link #controlWithAccountById(String)} must be called before {@link #create(Client)}.</strong>
      * @param accountAlias alias of the account
      * @return updated builder object
      */

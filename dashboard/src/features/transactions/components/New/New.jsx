@@ -18,6 +18,7 @@ class Form extends React.Component {
     this.removeActionItem = this.removeActionItem.bind(this)
     this.toggleDropwdown = this.toggleDropwdown.bind(this)
     this.closeDropdown = this.closeDropdown.bind(this)
+    this.disableSubmit = this.disableSubmit.bind(this)
   }
 
   toggleDropwdown() {
@@ -36,6 +37,10 @@ class Form extends React.Component {
     this.closeDropdown()
   }
 
+  disableSubmit(actions) {
+    return actions.length == 0 & !this.state.showAdvanced
+  }
+
   removeActionItem(index) {
     this.props.fields.actions.removeField(index)
   }
@@ -50,7 +55,20 @@ class Form extends React.Component {
 
     return new Promise((resolve, reject) => {
       this.props.submitForm(data)
-        .catch((err) => reject({_error: err.message}))
+        .catch((err) => {
+          const response = {}
+
+          if (err.data) {
+            response.actions = []
+
+            err.data.forEach((error) => {
+              response.actions[error.data.action_index] = {type: error}
+            })
+          }
+
+          response['_error'] = err
+          return reject(response)
+        })
     })
   }
 
@@ -62,28 +80,29 @@ class Form extends React.Component {
       submitting
     } = this.props
 
-    let submitLabel = 'Submit Transaction'
+    let submitLabel = 'Submit transaction'
     if (submit_action.value == 'generate') {
-      submitLabel = 'Generate Transaction Hex'
+      submitLabel = 'Generate transaction hex'
     }
 
     return(
       <FormContainer
         error={error}
-        label='New Transaction'
+        label='New transaction'
         submitLabel={submitLabel}
         onSubmit={handleSubmit(this.submitWithValidation)}
         showSubmitIndicator={true}
-        submitting={submitting} >
+        submitting={submitting}
+        disabled={this.disableSubmit(actions)} >
 
         <FormSection title='Actions'>
-          {actions.length == 0 && <p className={styles.actionInfo}>
-              Add actions to issue, spend, control, or retire asset units.
-              For more information, please consult the&nbsp;
-              <a href='/docs/core/build-applications/transaction-basics#creating-transactions' target='_blank'>
-                documentation
-              </a>.
-            </p>}
+          <p className={styles.actionInfo}>
+            Add actions to issue, spend, control, or retire asset units.
+            For more information, please consult the&nbsp;
+            <a href='/docs/core/build-applications/transaction-basics#creating-transactions' target='_blank'>
+              documentation
+            </a>.
+          </p>
           {actions.map((action, index) =>
             <ActionItem
               key={index}
@@ -98,16 +117,16 @@ class Form extends React.Component {
               <DropdownButton
                 className={`btn btn-default ${styles.addAction}`}
                 id='input-dropdown-addon'
-                title='+ Add Action'
+                title='+ Add action'
                 onSelect={this.addActionItem}
               >
                 <MenuItem eventKey='issue'>Issue</MenuItem>
-                <MenuItem eventKey='spend_account'>Spend from Account</MenuItem>
-                <MenuItem eventKey='spend_account_unspent_output'>Spend Unspent Output</MenuItem>
-                <MenuItem eventKey='control_account'>Control with Account</MenuItem>
-                <MenuItem eventKey='control_program'>Control with Program</MenuItem>
+                <MenuItem eventKey='spend_account'>Spend from account</MenuItem>
+                <MenuItem eventKey='spend_account_unspent_output'>Spend unspent output</MenuItem>
+                <MenuItem eventKey='control_account'>Control with account</MenuItem>
+                <MenuItem eventKey='control_program'>Control with program</MenuItem>
                 <MenuItem eventKey='retire_asset'>Retire</MenuItem>
-                <MenuItem eventKey='set_transaction_reference_data'>Set Transaction Reference Data</MenuItem>
+                <MenuItem eventKey='set_transaction_reference_data'>Set transaction reference data</MenuItem>
               </DropdownButton>
             </div>
         </FormSection>
@@ -141,8 +160,9 @@ class Form extends React.Component {
                   <td><input id='submit_action_submit' type='radio' {...submit_action} value='submit' checked={submit_action.value == 'submit'} /></td>
                   <td>
                     <label htmlFor='submit_action_submit'>Submit transaction to blockchain</label>
+                    <br />
                     <label htmlFor='submit_action_submit' className={styles.submitDescription}>
-                      This transaction will be signed by the Mock HSM and submitted to the blockchain.
+                      This transaction will be signed by the MockHSM and submitted to the blockchain.
                     </label>
                   </td>
                 </tr>
@@ -150,8 +170,9 @@ class Form extends React.Component {
                   <td><input id='submit_action_generate' type='radio' {...submit_action} value='generate' checked={submit_action.value == 'generate'} /></td>
                   <td>
                     <label htmlFor='submit_action_generate'>Allow additional actions</label>
+                    <br />
                     <label htmlFor='submit_action_generate' className={styles.submitDescription}>
-                      These actions will be signed by the Mock HSM and returned as a
+                      These actions will be signed by the MockHSM and returned as a
                       transaction hex string, which should be used as the base
                       transaction in a multi-party swap. This transaction will be
                       valid for one hour.

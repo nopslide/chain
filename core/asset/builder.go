@@ -34,19 +34,23 @@ type issueAction struct {
 	ReferenceData chainjson.Map `json:"reference_data"`
 }
 
-func (a *issueAction) Build(ctx context.Context, maxTime time.Time) (*txbuilder.BuildResult, error) {
+func (a *issueAction) Build(ctx context.Context, maxTime time.Time, builder *txbuilder.TemplateBuilder) error {
+	if a.AssetID == (bc.AssetID{}) {
+		return txbuilder.MissingFieldsError("asset_id")
+	}
+
 	asset, err := a.assets.findByID(ctx, a.AssetID)
 	if errors.Root(err) == pg.ErrUserInputNotFound {
 		err = errors.WithDetailf(err, "missing asset with ID %q", a.AssetID)
 	}
 	if err != nil {
-		return nil, err
+		return err
 	}
 
 	var nonce [8]byte
 	_, err = rand.Read(nonce[:])
 	if err != nil {
-		return nil, err
+		return err
 	}
 	txin := bc.NewIssuanceInput(nonce[:], a.Amount, a.ReferenceData, asset.InitialBlockHash, asset.IssuanceProgram, nil)
 
@@ -55,9 +59,6 @@ func (a *issueAction) Build(ctx context.Context, maxTime time.Time) (*txbuilder.
 	keyIDs := txbuilder.KeyIDs(asset.Signer.XPubs, path)
 	tplIn.AddWitnessKeys(keyIDs, asset.Signer.Quorum)
 
-	return &txbuilder.BuildResult{
-		Inputs:              []*bc.TxInput{txin},
-		SigningInstructions: []*txbuilder.SigningInstruction{tplIn},
-		MinTimeMS:           bc.Millis(time.Now()),
-	}, nil
+	builder.RestrictMinTimeMS(bc.Millis(time.Now()))
+	return builder.AddInput(txin, tplIn)
 }

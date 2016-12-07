@@ -4,16 +4,22 @@ import (
 	"context"
 	"testing"
 
+	"chain/core/coretest"
+	"chain/core/pin"
 	"chain/database/pg/pgtest"
 	"chain/protocol"
 	"chain/protocol/bc"
+	"chain/protocol/prottest"
 )
 
 func TestIndexBlock(t *testing.T) {
 	ctx := context.Background()
 	db := pgtest.NewTx(t)
+	c := prottest.NewChain(t)
 
-	indexer := NewIndexer(db, &protocol.Chain{})
+	pinStore := pin.NewStore(db)
+	coretest.CreatePins(ctx, t, pinStore)
+	indexer := NewIndexer(db, c, pinStore)
 	b := &bc.Block{
 		Transactions: []*bc.Tx{},
 	}
@@ -33,7 +39,7 @@ func TestAnnotatedTxs(t *testing.T) {
 	ctx := context.Background()
 	db := pgtest.NewTx(t)
 
-	indexer := NewIndexer(db, &protocol.Chain{})
+	indexer := NewIndexer(db, &protocol.Chain{}, nil)
 	b := &bc.Block{
 		Transactions: []*bc.Tx{
 			{Hash: bc.Hash{0: 0x01}},

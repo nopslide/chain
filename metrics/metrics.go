@@ -48,7 +48,7 @@ type Latency struct {
 // duration limit and with three significant figures of precision.
 func NewLatency(limit time.Duration) *Latency {
 	return &Latency{
-		hdr:   *hdrhistogram.New(0, int64(limit), 3),
+		hdr:   *hdrhistogram.New(0, int64(limit), 2),
 		limit: limit,
 	}
 }
@@ -78,7 +78,7 @@ func (l *Latency) Reset() {
 func (l *Latency) String() string {
 	var b bytes.Buffer
 	fmt.Fprintf(&b, `{"Histogram":`)
-	h, _ := json.Marshal((&l.hdr).Export())
+	h, _ := json.Marshal((&l.hdr).Export()) // #nosec
 	b.Write(h)
 	fmt.Fprintf(&b, `,"Over":%d,"Timestamp":%d,"Max":%d}`, l.nover, l.time.Unix(), l.max)
 	return b.String()
@@ -148,7 +148,7 @@ func (r *RotatingLatency) rotate() {
 //              "Histogram": {
 //                  "LowestTrackableValue": 0,
 //                  "HighestTrackableValue": 1000000000,
-//                  "SignificantFigures": 3,
+//                  "SignificantFigures": 2,
 //                  "Counts": [2,0,15,...]
 //              }
 //          },

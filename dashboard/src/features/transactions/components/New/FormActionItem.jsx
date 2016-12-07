@@ -1,11 +1,11 @@
 import React from 'react'
 import {
   TextField,
-  HiddenField,
   JsonField,
   ObjectSelectorField,
-  Autocomplete
+  Autocomplete,
 } from 'components/Common'
+import { ErrorBanner, HiddenField } from 'features/shared/components'
 import styles from './FormActionItem.scss'
 
 const ISSUE_KEY = 'issue'
@@ -18,12 +18,12 @@ const TRANSACTION_REFERENCE_DATA = 'set_transaction_reference_data'
 
 const actionLabels = {
   [ISSUE_KEY]: 'Issue',
-  [SPEND_ACCOUNT_KEY]: 'Spend from Account',
-  [SPEND_UNSPENT_KEY]: 'Spend Unspent Output',
-  [CONTROL_ACCOUNT_KEY]: 'Control with Account',
-  [CONTROL_PROGRAM_KEY]: 'Control with Program',
+  [SPEND_ACCOUNT_KEY]: 'Spend from account',
+  [SPEND_UNSPENT_KEY]: 'Spend unspent output',
+  [CONTROL_ACCOUNT_KEY]: 'Control with account',
+  [CONTROL_PROGRAM_KEY]: 'Control with program',
   [RETIRE_ASSET_KEY]: 'Retire',
-  [TRANSACTION_REFERENCE_DATA]: 'Set Transaction Reference Data',
+  [TRANSACTION_REFERENCE_DATA]: 'Set transaction reference data',
 }
 
 const visibleFields = {
@@ -75,14 +75,19 @@ export default class ActionItem extends React.Component {
       this.props.remove(this.props.index)
     }
 
+    const classNames = [styles.main]
+    if (type.error) classNames.push(styles.error)
+
     return (
-      <div className={styles.main} ref={ref => this.scrollRef = ref}>
+      <div className={classNames.join(' ')} ref={ref => this.scrollRef = ref}>
         <HiddenField fieldProps={type} />
 
         <div className={styles.header}>
           <label className={styles.title}>{actionLabels[type.value]}</label>
           <a href='#' className='btn btn-sm btn-danger' onClick={remove}>Remove</a>
         </div>
+
+        {type.error && <ErrorBanner message={type.error} />}
 
         {visible.account &&
           <ObjectSelectorField

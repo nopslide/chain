@@ -34,12 +34,23 @@ func Prevout(in *bc.TxInput) *Output {
 	}
 }
 
+// OutputKey returns the key of an output in the state tree.
+func OutputKey(o bc.Outpoint) (bkey []byte) {
+	var b bytes.Buffer
+	w := errors.NewWriter(&b) // used to satisfy interfaces
+	o.WriteTo(w)
+	return b.Bytes()
+}
+
+func outputBytes(o *Output) []byte {
+	var b bytes.Buffer
+	o.WriteCommitment(&b)
+	return b.Bytes()
+}
+
 // OutputTreeItem returns the key of an output in the state tree,
 // as well as the output commitment (a second []byte) for Inserts
 // into the state tree.
 func OutputTreeItem(o *Output) (bkey, commitment []byte) {
-	b := bytes.NewBuffer(nil)
-	w := errors.NewWriter(b) // used to satisfy interfaces
-	o.Outpoint.WriteTo(w)
-	return b.Bytes(), o.Commitment()
+	return OutputKey(o.Outpoint), outputBytes(o)
 }
